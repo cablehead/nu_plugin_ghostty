@@ -55,7 +55,7 @@ Both demos run under http-nu with `--datastar-rocket`.
 http-nu --datastar-rocket --plugin ./nu_plugin_ghostty 127.0.0.1:3012 demo/term.nu
 ```
 
-`demo/panes.nu` is many terminals in columns, after ptyZZZ's panes example. You open, split and close panes while the page is up, and every open window follows along. Press Cmd+K to see the keys. All the terminals share one connection to the server. Each pane runs `nu` if it's on your PATH, or your login shell if not; set `GHX_PANE_CMD` to run something else.
+`demo/panes.nu` is many terminals in columns, after [ptyZZZ's panes example](https://github.com/cablehead/ptyZZZ/tree/main/examples/panes). You open, split and close panes while the page is up, and every open window follows along. Press Cmd+K to see the keys. All the terminals share one connection to the server. Each pane runs `nu` if it's on your PATH, or your login shell if not; set `GHX_PANE_CMD` to run something else.
 
 ```sh
 http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1:3015 demo/panes.nu
