@@ -1,70 +1,73 @@
 # nu_plugin_ghostty
 
-A nushell plugin that runs a program in a terminal kept by
-[libghostty-vt](https://github.com/ghostty-org/ghostty), and answers for any
-rows of it as HTML, scrollback included. A page holds only the rows in view and
-asks for the rows at its scroll position, the way largediff-go-brr asks for a
-window of a diff.
+nu_plugin_ghostty runs programs in terminals from Nushell and lets a web page show them. Each terminal is kept by [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and the plugin hands back any part of its screen or scrollback as HTML.
 
 ```nu
 let t = ghostty spawn [bash -l] --cols 100 --rows 30
 $t | ghostty input "ls\r"
-$t | ghostty window 1200 30            # {fp, top, total, rows, cols, links, html}
-$t | ghostty window 1200 30 --fp $fp   # {unchanged: true} when it is
-$t | ghostty changes                   # a stream, one {seq, alive} each time the program writes, a last one with its exit code
-$t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
-$t | ghostty paste "two\nlines"        # bracketed when the program asked
+$t | ghostty window 0 30      # rows 0 to 29, as HTML
+```
+
+It comes with `<ghostty-term>`, a web component that draws one of these terminals in a page and sends your typing back to it. With [http-nu](https://github.com/cablehead/http-nu) serving the page, a terminal in the browser is a few lines of Nushell.
+
+![Two columns of terminals in a browser, from demo/panes.nu](demo/panes.png)
+
+## Commands
+
+```nu
+ghostty spawn [bash -l] --cols 100 --rows 30   # start a program; returns its handle
+$t | ghostty input "ls\r"                      # type text into it
+$t | ghostty key ArrowUp --mods 4              # a key, as a browser names it
+$t | ghostty paste "two\nlines"                # paste, bracketed if the program asked for that
 $t | ghostty resize 120 40
-$t | ghostty mouse press --button left --x 4 --y 2   # reported when the program asked
-$t | ghostty focus true                # reported when the program asked
-$t | ghostty palette                   # the <style> block the HTML's colours refer to
-$t | ghostty info                      # {total, rows, cols, seq, alive}, and code once it has ended
-$t | ghostty close                     # end its program and free it; its handle is never reused
-ghostty changes --all                  # every terminal on one stream, later ones too, each tick with its `term`
+$t | ghostty mouse press --button left --x 4 --y 2
+$t | ghostty focus true
+$t | ghostty window 1200 30                    # {fp, top, total, rows, cols, links, html}
+$t | ghostty window 1200 30 --fp $fp           # {unchanged: true} if nothing changed
+$t | ghostty changes                           # a stream: one record each time the program writes
+$t | ghostty palette                           # the <style> block the HTML's colours refer to
+$t | ghostty info                              # {total, rows, cols, seq, alive}, and the exit code once it ends
+$t | ghostty close                             # end the program; its handle is never used again
+ghostty changes --all                          # every terminal's changes on one stream
 ```
 
-`static/ghostty-term.js` is `<ghostty-term src="/term">`, a Datastar Rocket
-element modelled on ptyZZZ's `<pty-term>`: keys, composed text and paste go to
-`{src}/input`, it fits the terminal to its box, and it follows the live output
-until you scroll away. It holds the rows in view plus a screenful either side
-and asks `{src}/win` for the rows at its scroll position. Only the last `rows`
-rows of a terminal can change, so while you are scrolled back into history it
-asks for nothing; the `{src}/live` ticks only lengthen the scrollbar. Its
-scroll area is squeezed as largediff-go-brr's `/anchor/` is: at most `cap`
-pixels (12,000,000 by default), the rows it holds at their real height and the
-gaps around them squeezed. Mouse and focus reports reach the program only when
-it asked for them, and Shift keeps native selection.
+Row 0 is the oldest line kept. A terminal keeps 10,000 lines of scrollback unless you pass `--scrollback`.
 
-Web addresses in the rows are links. `ghostty window` finds them in the
-terminal's text, joining the rows a long address wraps across, as WezTerm and
-ptyZZZ do, and matching with Ghostty's own scheme rule (`src/config/url.zig`),
-so a bracketed part such as `Rust_(video_game)` stays in and a sentence's full
-stop stays out. Each is `{row, from, to, url}`: a row of the window, and a
-range of that row's text, one for each row the address spans. Only http, https
-and mailto become links, the ones the program sent with OSC 8 included, and
-they open in a new tab.
+Mouse and focus reports reach the program only when it asked for them, the same as in a real terminal.
 
-`demo/panes.nu` is many terminals on one page, after ptyZZZ's `examples/panes`: columns of panes you open, split and close while the page is up, and every open page follows. One connection carries them all: `/sse` follows `ghostty changes --all` and names each tick's pane, and the page hands it to that pane's `<ghostty-term pane="...">`. The layout and each pane's terminal handle are kept in the store, so a restart spawns every pane again.
+## Links
 
-```sh
-http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1:3015 demo/panes.nu
-```
+`ghostty window` finds web addresses in the text and returns them as `links`, so the page can make them clickable. An address that wraps across several rows is still found whole. It uses Ghostty's own rule for where an address ends, so `Rust_(video_game)` keeps its brackets and a full stop after an address is left out. Only http, https and mailto addresses become links, including ones the program marked itself with OSC 8.
 
-`demo/term.nu` serves one terminal with it:
+## ghostty-term
+
+`static/ghostty-term.js` is the element, `<ghostty-term src="/term">`. It's built on Datastar Rocket and modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`.
+
+It sizes the terminal to fit its box, follows the live output, and stops following when you scroll up. It asks `{src}/win` for the rows at its scroll position and keeps only those in the page, so a long history doesn't slow the page down. Keys, composed text and paste go to `{src}/input`. Hold Shift to select text when the program has taken the mouse.
+
+## Demos
+
+Both demos run under http-nu with `--datastar-rocket`.
+
+`demo/term.nu` is one terminal in a page:
 
 ```sh
 http-nu --datastar-rocket --plugin ./nu_plugin_ghostty 127.0.0.1:3012 demo/term.nu
 ```
 
-Row 0 is the oldest line kept. `--scrollback` sets how many lines are kept,
-10,000 by default.
-
-`demo/serve.nu` is a page for http-nu that scrolls through 3,000 coloured lines:
+`demo/panes.nu` is many terminals in columns, after ptyZZZ's panes example. You open, split and close panes while the page is up, and every open window follows along. Press Cmd+K to see the keys. All the terminals share one connection to the server. Each pane runs `nu` if it's on your PATH, or your login shell if not; set `GHX_PANE_CMD` to run something else.
 
 ```sh
-http-nu --datastar --plugin ./nu_plugin_ghostty 127.0.0.1:3011 demo/serve.nu
+http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1:3015 demo/panes.nu
 ```
 
-Build with `./build.sh`; `./gen-keys.sh` regenerates `keys.zig` for a new libghostty-vt. It needs Zig 0.17.1 and the libghostty-vt 1.0.1
-XCFramework, so it builds on macOS only for now. The plugin answers nushell
-0.116 and 0.117.
+## Build
+
+You need Zig 0.17.1 and libghostty-vt 1.0.1, which comes as `ghostty-vt-1.0.1.xcframework.zip` from <https://release.files.ghostty.org/libghostty-vt/1.0.1/>. Unzip it and point `VT` at its macOS directory:
+
+```sh
+VT=path/to/ghostty-vt.xcframework/macos-arm64_x86_64 ZIG=path/to/zig ./build.sh
+plugin add ./nu_plugin_ghostty
+```
+
+The build script is for macOS only for now.
