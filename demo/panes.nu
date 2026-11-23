@@ -15,14 +15,18 @@
 # moved: the page fetches /strip again. So a pane opened or closed in one
 # window appears or goes in every other.
 #
-# Keys, as ptyZZZ's panes: navigate mode by default, h/l between columns, j/k
-# between panes, n a new column, s split, Enter types into the pane. Cmd+Enter
-# (Ctrl+Enter off macOS) goes back to navigate. Cmd+K then x closes a pane.
+# Keys and the Cmd+K panel are ptyZZZ's panes (examples/panes/static/panes.js):
+# navigate mode by default, h/l between columns, j/k between panes, n a new
+# column, s split, f zoom, Enter types into the pane, Cmd+Enter (Ctrl+Enter
+# off macOS) back to navigate. Cmd+K shows the panel after a moment, with
+# every action and its key; close is only there, Cmd+K x. The strip slides
+# the selected column into view.
 
 use http-nu/datastar *
 
 const STATIC = path self ../static
 const PAGE_JS = path self panes.js
+const PAGE_CSS = path self panes.css
 let pane_cmd = ($env.GHX_PANE_CMD? | default "nu" | split row " ")
 
 def layout [] {
@@ -77,7 +81,7 @@ def ensure-panes [] {
 ensure-panes
 
 def pane-html [pid: string] {
-  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span></div><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\"></ghostty-term></div>"
+  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span><span class=\"status\"><span class=\"tag zoomtag\">[zoom]</span><button type=\"button\" class=\"follow\" title=\"Scroll to the live output and follow it\"></button></span></div><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\"></ghostty-term></div>"
 }
 
 def strip-html [] {
@@ -87,34 +91,30 @@ def strip-html [] {
   $"<div id=\"strip\">($cols)</div>"
 }
 
+# The page: ptyZZZ's panes page (templates/page.html, panel.html,
+# static/panes.css), with <ghostty-term> in place of <pty-term> and a plain
+# EventSource for the one stream.
 def page [palette: string] {
   let imports = {imports: {datastar: $DATASTAR_ROCKET_JS_PATH}} | to json -r
+  let row = {|key, act, label| $"<button type=\"button\" class=\"picker-row\" data-key=\"($key)\" data-act=\"($act)\"><span>($label)</span><span class=\"row-keys\"><kbd>($key)</kbd></span></button>" }
+  let panel = [
+    (do $row n new-column "New column") (do $row s split "Split column") (do $row f zoom "Zoom pane")
+    (do $row h col-prev "Prev column") (do $row l col-next "Next column") (do $row k pane-prev "Prev pane")
+    (do $row j pane-next "Next pane") (do $row x close "Close")
+  ] | str join ""
   $"<!doctype html>
 <html><head><meta charset=utf-8><title>ghostty-term panes</title>
 ($palette)
 <link rel=stylesheet href=\"/static/ghostty-term.css\">
+<link rel=stylesheet href=\"/panes.css\">
 <script type=importmap>($imports)</script>
 <script type=module src=\"($DATASTAR_ROCKET_JS_PATH)\"></script>
 <script type=module src=\"/static/ghostty-term.js\"></script>
-<style>
-html, body { margin: 0; height: 100%; background: #1d1f21; color: #c5c8c6; font: 13px system-ui, sans-serif; }
-body { display: flex; flex-direction: column; }
-#bar { display: flex; gap: 12px; align-items: center; padding: 6px 12px; color: #8a8f98; }
-#bar .mode { color: #c5c8c6; }
-#strip { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 0 8px 8px; overflow-x: auto; }
-.column { flex: 1 0 min\(100ch, 100%\); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.pane .label { padding: 2px 8px; color: #8a8f98; }
-/* Typing into a pane shows as <ghostty-term>'s own focus outline. In
-   navigate mode nothing has focus, so the selected pane's name is marked. */
-.pane.selected .label { color: #c5c8c6; background: #2c2f33; border-radius: 4px 4px 0 0; }
-.pane ghostty-term { flex: 1; min-height: 0; margin: 0 8px 8px; }
-#panel { position: fixed; bottom: 12px; right: 12px; padding: 8px 12px; background: #2c2f33; border-radius: 6px; }
-</style>
 </head><body>
-<div id=\"bar\"><span class=\"mode\">navigate</span><span>h/l j/k move · n new column · s split · Enter type · Cmd+Enter back · Cmd+K x close</span></div>
 (strip-html)
-<div id=\"panel\" hidden>x close this pane</div>
+<div id=\"empty\" hidden>mod+K n to open a pane</div>
+<div id=\"status\"><button type=\"button\" id=\"mode-badge\">navigate</button><span id=\"link\">--</span><span class=\"hint\">mod+K</span></div>
+<div id=\"actions-backdrop\" class=\"actions-backdrop\" hidden><div class=\"actions-panel\" id=\"actions-panel\"><div class=\"picker-heading\">Pane</div>($panel)</div></div>
 <script type=module src=\"/panes.js\"></script>
 </body></html>"
 }
@@ -129,6 +129,7 @@ def status [code: int] { metadata set { merge {'http.response': {status: $code}}
     [] => { page ((all-panes (layout) | get 0 | handle-of $in) | ghostty palette) }
     ["strip"] => { strip-html }
     ["panes.js"] => { open --raw $PAGE_JS | metadata set { merge {'http.response': {headers: {content-type: "text/javascript"}}} } }
+    ["panes.css"] => { open --raw $PAGE_CSS | metadata set { merge {'http.response': {headers: {content-type: "text/css"}}} } }
     ["sse"] => {
       # Every terminal's ticks, each named for its pane. A handle the map
       # doesn't know (a pane opened since) reloads it from the store.
