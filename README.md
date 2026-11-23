@@ -1,6 +1,14 @@
 # nu_plugin_ghostty
 
-nu_plugin_ghostty runs programs in terminals from Nushell and lets a web page show them. Each terminal is kept by [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and the plugin hands back any part of its screen or scrollback as HTML.
+Real terminals in a web page, served from Nushell. `<ghostty-term>` is a [Datastar Rocket](https://data-star.dev) web component that draws a terminal and sends your keys to it. Behind it, this Nushell plugin runs the program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and hands the page the rows it's scrolled to, as HTML, scrollback included.
+
+In the page, a terminal is one tag:
+
+```html
+<ghostty-term src="/term"></ghostty-term>
+```
+
+Behind `/term`, [http-nu](https://github.com/cablehead/http-nu) answers with the plugin:
 
 ```nu
 let t = ghostty spawn [bash -l] --cols 100 --rows 30
@@ -8,7 +16,7 @@ $t | ghostty input "ls\r"
 $t | ghostty window 0 30      # rows 0 to 29, as HTML
 ```
 
-It comes with `<ghostty-term>`, a web component that draws one of these terminals in a page and sends your typing back to it. With [http-nu](https://github.com/cablehead/http-nu) serving the page, a terminal in the browser is a few lines of Nushell.
+`demo/term.nu` is the whole server for one terminal.
 
 ![Two columns of terminals in a browser, from demo/panes.nu](demo/panes.png)
 
@@ -41,7 +49,7 @@ Mouse and focus reports reach the program only when it asked for them, the same 
 
 ## ghostty-term
 
-`static/ghostty-term.js` is the element, `<ghostty-term src="/term">`. It's built on Datastar Rocket and modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`.
+`static/ghostty-term.js` is the element. It's modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`.
 
 It sizes the terminal to fit its box, follows the live output, and stops following when you scroll up. It asks `{src}/win` for the rows at its scroll position and keeps only those in the page, so a long history doesn't slow the page down. Keys, composed text and paste go to `{src}/input`. Hold Shift to select text when the program has taken the mouse.
 
