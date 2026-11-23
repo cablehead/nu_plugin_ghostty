@@ -49,7 +49,7 @@ Mouse and focus reports reach the program only when it asked for them, the same 
 
 ## ghostty-term
 
-`static/ghostty-term.js` is the element. It's modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`.
+`static/ghostty-term.js` is the element. It's modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`. It parses no escape codes and keeps no terminal state: it places the HTML rows the server sends.
 
 It sizes the terminal to fit its box, follows the live output, and stops following when you scroll up. It asks `{src}/win` for the rows at its scroll position and keeps only those in the page, so a long history doesn't slow the page down. Keys, composed text and paste go to `{src}/input`. Hold Shift to select text when the program has taken the mouse.
 
