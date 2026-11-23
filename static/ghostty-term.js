@@ -6,6 +6,11 @@
 // a window of a diff. The terminal and its history live in the plugin.
 //
 //   <ghostty-term src="/term"></ghostty-term>
+//   <ghostty-term src="/t/p1" pane="p1"></ghostty-term>   one of many on a page
+//
+// With `pane`, the element opens no stream of its own: the page follows one
+// stream for every terminal and dispatches each tick on document as a
+// "ghostty-tick" event, {pane, seq, total, rows, alive, code} (demo/panes.nu).
 //
 // The server under `src` answers:
 //   GET  {src}/live            SSE, event "tick": {seq, total, rows, alive}
@@ -139,10 +144,24 @@ function applyLinks(root, links) {
   }
 }
 
+// A pane's ticks from the page's one stream: the page dispatches every tick as
+// a "ghostty-tick" event on document, {pane, seq, total, rows, alive, code};
+// this keeps the ones for `pane` and offers them as an EventSource would.
+function paneTicks(pane) {
+  const t = new EventTarget();
+  const on = (ev) => {
+    if (ev.detail?.pane === pane) t.dispatchEvent(new MessageEvent("tick", { data: JSON.stringify(ev.detail) }));
+  };
+  document.addEventListener("ghostty-tick", on);
+  t.close = () => document.removeEventListener("ghostty-tick", on);
+  return t;
+}
+
 rocket("ghostty-term", {
   mode: "light",
   props: ({ string, bool }) => ({
     src: string.trim,
+    pane: string.trim,
     nofit: bool,
     cap: string.trim,
   }),
@@ -316,8 +335,10 @@ rocket("ghostty-term", {
     }, { passive: true });
     cleanup(() => clearTimeout(restTimer));
 
-    // ---- the live stream: a tick per write
-    const live = new EventSource(`${src}/live`);
+    // ---- the live stream: a tick per write. With a pane name, the page holds
+    // one stream for all its terminals and hands each its own ticks, as
+    // "ghostty-tick" events on document; alone, the element opens its own.
+    const live = props.pane ? paneTicks(props.pane) : new EventSource(`${src}/live`);
     live.addEventListener("tick", (ev) => {
       const t = JSON.parse(ev.data);
       setTotal(t.total, t.rows);

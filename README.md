@@ -19,6 +19,8 @@ $t | ghostty mouse press --button left --x 4 --y 2   # reported when the program
 $t | ghostty focus true                # reported when the program asked
 $t | ghostty palette                   # the <style> block the HTML's colours refer to
 $t | ghostty info                      # {total, rows, cols, seq, alive}, and code once it has ended
+$t | ghostty close                     # end its program and free it; its handle is never reused
+ghostty changes --all                  # every terminal on one stream, later ones too, each tick with its `term`
 ```
 
 `static/ghostty-term.js` is `<ghostty-term src="/term">`, a Datastar Rocket
@@ -41,6 +43,12 @@ stop stays out. Each is `{row, from, to, url}`: a row of the window, and a
 range of that row's text, one for each row the address spans. Only http, https
 and mailto become links, the ones the program sent with OSC 8 included, and
 they open in a new tab.
+
+`demo/panes.nu` is many terminals on one page, after ptyZZZ's `examples/panes`: columns of panes you open, split and close while the page is up, and every open page follows. One connection carries them all: `/sse` follows `ghostty changes --all` and names each tick's pane, and the page hands it to that pane's `<ghostty-term pane="...">`. The layout and each pane's terminal handle are kept in the store, so a restart spawns every pane again.
+
+```sh
+http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1:3015 demo/panes.nu
+```
 
 `demo/term.nu` serves one terminal with it:
 

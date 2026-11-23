@@ -146,8 +146,14 @@ const Term = struct {
     fd: c_int,
     pid: c.pid_t,
     lock: c.pthread_mutex_t,
+    /// the handle `ghostty spawn` returned: never reused, so a page that
+    /// still names a closed terminal gets "no such terminal", not another one
+    handle: i64 = 0,
     seq: i64 = 0,
     alive: bool = true,
+    /// the reader thread has finished and will not touch the terminal again,
+    /// so `ghostty close` may free it
+    done: bool = false,
     /// the program's exit code once it has ended: its own, or 128 plus the
     /// signal that ended it, as a shell reports it
     code: i64 = 0,
@@ -161,12 +167,21 @@ const Term = struct {
 var terms: [max_terms]?*Term = @splat(null);
 var terms_lock: c.pthread_mutex_t = undefined;
 var next_stream: i64 = 1;
+var next_handle: i64 = 1;
+/// `ghostty changes --all`: streams that hear every terminal, one record per
+/// write tagged with its terminal, and a last one when it ends. 0 when free.
+var all_subs: [max_subs]i64 = @splat(0);
+var all_spans: [max_subs]Span = undefined;
+var all_lock: c.pthread_mutex_t = undefined;
 
 fn getTerm(h: i64) ?*Term {
-    if (h < 1 or h > max_terms) return null;
     _ = c.pthread_mutex_lock(&terms_lock);
     defer _ = c.pthread_mutex_unlock(&terms_lock);
-    return terms[@intCast(h - 1)];
+    for (terms) |maybe| {
+        const t = maybe orelse continue;
+        if (t.handle == h) return t;
+    }
+    return null;
 }
 
 /// libghostty calls this when the program asks the terminal something
@@ -182,89 +197,110 @@ fn reader(term: *Term) void {
         const n = c.read(term.fd, &buf, buf.len);
         if (n <= 0) break;
         var subs: [max_subs]i64 = undefined;
-        var seq: i64 = 0;
-        var total: usize = 0;
-        var rows: u16 = 0;
+        var t: Tick = .{ .term = term.handle, .alive = true };
         {
             _ = c.pthread_mutex_lock(&term.lock);
             defer _ = c.pthread_mutex_unlock(&term.lock);
             c.ghostty_terminal_vt_write(term.t, &buf, @intCast(n));
             term.seq += 1;
-            seq = term.seq;
+            t.seq = term.seq;
             subs = term.subs;
-            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
-            rows = term.rows;
+            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &t.total);
+            t.rows = term.rows;
         }
         for (subs, 0..) |sid, i| {
-            if (sid == 0) continue;
-            var j: J = .{};
-            defer j.deinit();
-            const s = term.sub_span[i];
-            j.fmt("{{\"Data\":[{d},{{\"List\":{{\"Record\":{{\"val\":{{\"seq\":", .{sid});
-            intV(&j, seq, s);
-            j.raw(",\"total\":");
-            intV(&j, @intCast(total), s);
-            j.raw(",\"rows\":");
-            intV(&j, rows, s);
-            j.raw(",\"alive\":");
-            boolV(&j, true, s);
-            j.raw("},\"span\":");
-            spanJ(&j, s);
-            j.raw("}}}]}");
-            send(j.buf.items);
+            if (sid != 0) sendTick(sid, t, term.sub_span[i], false);
         }
+        sendAll(t);
     }
     // The program has ended: its code, then one last record saying so on each
-    // open stream, then the end of the stream.
+    // open stream, then the end of the terminal's own streams. The streams of
+    // every terminal stay open, for the next.
     var status: c_int = 0;
     _ = c.waitpid(term.pid, &status, 0);
     const code: i64 = if (status & 0x7f == 0) (status >> 8) & 0xff else 128 + (status & 0x7f);
     var subs: [max_subs]i64 = undefined;
     var spans: [max_subs]Span = undefined;
-    var seq: i64 = 0;
-    var total: usize = 0;
+    var t: Tick = .{ .term = term.handle, .alive = false, .code = code };
     {
         _ = c.pthread_mutex_lock(&term.lock);
         defer _ = c.pthread_mutex_unlock(&term.lock);
         term.alive = false;
         term.code = code;
-        seq = term.seq;
-        _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+        t.seq = term.seq;
+        _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &t.total);
+        t.rows = term.rows;
         subs = term.subs;
         spans = term.sub_span;
         term.subs = @splat(0);
     }
     for (subs, 0..) |sid, i| {
         if (sid == 0) continue;
-        var j: J = .{};
-        defer j.deinit();
-        j.fmt("{{\"Data\":[{d},{{\"List\":", .{sid});
-        endedRecord(&j, term, seq, total, code, spans[i]);
-        j.raw("}]}");
-        send(j.buf.items);
+        sendTick(sid, t, spans[i], false);
         var e: J = .{};
         defer e.deinit();
         e.fmt("{{\"End\":{d}}}", .{sid});
         send(e.buf.items);
     }
+    sendAll(t);
+    // Last: from here on this thread never touches the terminal, so
+    // `ghostty close` may free it.
+    _ = c.pthread_mutex_lock(&term.lock);
+    term.done = true;
+    _ = c.pthread_mutex_unlock(&term.lock);
 }
 
-/// {seq, total, rows, alive: false, code}: the last word on a terminal whose
-/// program has ended.
-fn endedRecord(j: *J, term: *Term, seq: i64, total: usize, code: i64, s: Span) void {
-    j.raw("{\"Record\":{\"val\":{\"seq\":");
-    intV(j, seq, s);
+/// One record on a changes stream: {seq, total, rows, alive}, with the
+/// program's exit code once it has ended, and the terminal's handle on a
+/// stream that hears every terminal.
+const Tick = struct { term: i64, seq: i64 = 0, total: usize = 0, rows: u16 = 0, alive: bool, code: ?i64 = null };
+
+fn tickRecord(j: *J, t: Tick, s: Span, with_term: bool) void {
+    j.raw("{\"Record\":{\"val\":{");
+    if (with_term) {
+        j.raw("\"term\":");
+        intV(j, t.term, s);
+        j.raw(",");
+    }
+    j.raw("\"seq\":");
+    intV(j, t.seq, s);
     j.raw(",\"total\":");
-    intV(j, @intCast(total), s);
+    intV(j, @intCast(t.total), s);
     j.raw(",\"rows\":");
-    intV(j, term.rows, s);
+    intV(j, t.rows, s);
     j.raw(",\"alive\":");
-    boolV(j, false, s);
-    j.raw(",\"code\":");
-    intV(j, code, s);
+    boolV(j, t.alive, s);
+    if (t.code) |code| {
+        j.raw(",\"code\":");
+        intV(j, code, s);
+    }
     j.raw("},\"span\":");
     spanJ(j, s);
     j.raw("}}");
+}
+
+fn sendTick(sid: i64, t: Tick, s: Span, with_term: bool) void {
+    var j: J = .{};
+    defer j.deinit();
+    j.fmt("{{\"Data\":[{d},{{\"List\":", .{sid});
+    tickRecord(&j, t, s, with_term);
+    j.raw("}]}");
+    send(j.buf.items);
+}
+
+/// The record to every `ghostty changes --all`.
+fn sendAll(t: Tick) void {
+    var subs: [max_subs]i64 = undefined;
+    var spans: [max_subs]Span = undefined;
+    {
+        _ = c.pthread_mutex_lock(&all_lock);
+        defer _ = c.pthread_mutex_unlock(&all_lock);
+        subs = all_subs;
+        spans = all_spans;
+    }
+    for (subs, 0..) |sid, i| {
+        if (sid != 0) sendTick(sid, t, spans[i], true);
+    }
 }
 
 fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) !i64 {
@@ -306,12 +342,14 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
 
     _ = c.pthread_mutex_lock(&terms_lock);
     defer _ = c.pthread_mutex_unlock(&terms_lock);
-    for (&terms, 0..) |*slot, i| {
+    for (&terms) |*slot| {
         if (slot.* == null) {
+            term.handle = next_handle;
+            next_handle += 1;
             slot.* = term;
             const th = try std.Thread.spawn(.{}, reader, .{term});
             th.detach();
-            return @intCast(i + 1);
+            return term.handle;
         }
     }
     return error.TooManyTerminals;
@@ -743,6 +781,26 @@ fn nuStr(v: V) ?[]const u8 {
     return if (x == .string) x.string else null;
 }
 
+/// A switch such as --all: given (its value null, or true), or not.
+fn hasFlag(call: V, name: []const u8) bool {
+    const list = field(call, "named") orelse return false;
+    if (list != .array) return false;
+    for (list.array.items) |pair| {
+        if (pair != .array or pair.array.items.len < 1) continue;
+        const key = pair.array.items[0];
+        const k = field(key, "item") orelse key;
+        if (k == .string and std.mem.eql(u8, k.string, name)) {
+            if (pair.array.items.len < 2) return true;
+            const val = pair.array.items[1];
+            if (val == .null) return true;
+            const b = field(val, "Bool") orelse return true;
+            const inner = field(b, "val") orelse b;
+            return !(inner == .bool and !inner.bool);
+        }
+    }
+    return false;
+}
+
 fn named(call: V, name: []const u8) ?V {
     const list = field(call, "named") orelse return null;
     if (list != .array) return null;
@@ -806,8 +864,63 @@ fn run(id: i64, r: V) void {
         return respondValue(id, j.buf.items);
     }
 
+    // Every terminal's changes on one stream, ones spawned later included:
+    // what a page with many terminals follows, over one connection.
+    if (std.mem.eql(u8, name, "ghostty changes") and hasFlag(call, "all")) {
+        _ = c.pthread_mutex_lock(&all_lock);
+        defer _ = c.pthread_mutex_unlock(&all_lock);
+        for (&all_subs, 0..) |*slot, i| {
+            if (slot.* != 0) continue;
+            const sid = @atomicRmw(i64, &next_stream, .Add, 1, .seq_cst);
+            slot.* = sid;
+            all_spans[i] = s;
+            var j: J = .{};
+            defer j.deinit();
+            j.fmt("{{\"CallResponse\":[{d},{{\"PipelineData\":{{\"ListStream\":{{\"id\":{d},\"span\":", .{ id, sid });
+            spanJ(&j, s);
+            j.raw(",\"metadata\":null}}}]}");
+            send(j.buf.items);
+            return;
+        }
+        return respondError(id, "too many open streams of every terminal", s);
+    }
+
     const h = inputHandle(input) orelse return respondError(id, "pipe in a handle from ghostty spawn", s);
     const term = getTerm(h) orelse return respondError(id, "no such terminal", s);
+
+    // End the program (SIGHUP, as closing a terminal window does; SIGKILL if
+    // it is still there after two seconds) and free the terminal. Its streams
+    // get their last record first. Run here, on the one thread that runs
+    // commands, once the reader thread is done, so nothing still holds it.
+    if (std.mem.eql(u8, name, "ghostty close")) {
+        var waited: u32 = 0;
+        while (true) : (waited += 1) {
+            _ = c.pthread_mutex_lock(&term.lock);
+            const done = term.done;
+            _ = c.pthread_mutex_unlock(&term.lock);
+            if (done) break;
+            if (waited == 0) _ = c.kill(term.pid, c.SIGHUP);
+            if (waited == 200) _ = c.kill(term.pid, c.SIGKILL);
+            if (waited > 400) return respondError(id, "the program would not end", s);
+            _ = c.usleep(10_000);
+        }
+        {
+            _ = c.pthread_mutex_lock(&terms_lock);
+            defer _ = c.pthread_mutex_unlock(&terms_lock);
+            for (&terms) |*slot| {
+                if (slot.* == term) slot.* = null;
+            }
+        }
+        _ = c.close(term.fd);
+        c.ghostty_formatter_free(term.fmt);
+        c.ghostty_formatter_free(term.pfmt);
+        if (term.enc != null) c.ghostty_key_encoder_free(term.enc);
+        if (term.menc != null) c.ghostty_mouse_encoder_free(term.menc);
+        c.ghostty_terminal_free(term.t);
+        _ = c.pthread_mutex_destroy(&term.lock);
+        alloc.destroy(term);
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
 
     if (std.mem.eql(u8, name, "ghostty input")) {
         const text = (if (positional(call, 0)) |p| nuStr(p) else null) orelse return respondError(id, "give the text to type", s);
@@ -1006,12 +1119,12 @@ fn run(id: i64, r: V) void {
         defer _ = c.pthread_mutex_unlock(&term.lock);
         if (!term.alive) {
             // Asked after the end: a list holding the one record that says so.
-            var total: usize = 0;
-            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+            var t: Tick = .{ .term = term.handle, .seq = term.seq, .rows = term.rows, .alive = false, .code = term.code };
+            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &t.total);
             var j: J = .{};
             defer j.deinit();
             j.raw("{\"List\":{\"vals\":[");
-            endedRecord(&j, term, term.seq, total, term.code, s);
+            tickRecord(&j, t, s, false);
             j.raw("],\"span\":");
             spanJ(&j, s);
             j.raw("}}");
@@ -1038,6 +1151,19 @@ fn run(id: i64, r: V) void {
 
 /// The engine stopped reading a stream: forget it.
 fn dropStream(sid: i64) void {
+    {
+        _ = c.pthread_mutex_lock(&all_lock);
+        defer _ = c.pthread_mutex_unlock(&all_lock);
+        for (&all_subs) |*slot| {
+            if (slot.* == sid) {
+                slot.* = 0;
+                var j: J = .{};
+                defer j.deinit();
+                j.fmt("{{\"End\":{d}}}", .{sid});
+                send(j.buf.items);
+            }
+        }
+    }
     for (terms) |maybe| {
         const term = maybe orelse continue;
         _ = c.pthread_mutex_lock(&term.lock);
@@ -1072,10 +1198,11 @@ const signatures =
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
     \\  {"long":"fp","short":null,"arg":"String","required":false,"desc":"the fp of the window you have"}],
     \\ "input_output_types":[["Int",{"Record":[]}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
-    \\{"sig":{"name":"ghostty changes","description":"A stream with one record each time the program writes ({seq, total, rows, alive: true}), and a last one when it ends ({alive: false, code}).","extra_description":"","search_terms":[],
+    \\{"sig":{"name":"ghostty changes","description":"A stream with one record each time the program writes ({seq, total, rows, alive: true}), and a last one when it ends ({alive: false, code}).","extra_description":"With --all and no handle piped in: every terminal's changes on one stream, ones spawned later included, each record with its terminal's handle as `term`. The stream stays open as terminals come and go.","search_terms":[],
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
-    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
-    \\ "input_output_types":[["Int",{"List":{"Record":[]}}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
+    \\  {"long":"all","short":null,"arg":null,"required":false,"desc":"every terminal, on one stream"}],
+    \\ "input_output_types":[["Int",{"List":{"Record":[]}}],["Nothing",{"List":{"Record":[]}}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
     \\{"sig":{"name":"ghostty key","description":"Press a key, named as a browser's KeyboardEvent.code. libghostty encodes it the way the program asked keys to be sent.","extra_description":"--mods is the browser's: 1 shift, 2 alt, 4 ctrl, 8 meta. --text is the KeyboardEvent.key the key made, when it made a character.","search_terms":[],
     \\ "required_positional":[{"name":"code","desc":"such as ArrowUp, KeyA, Enter","shape":"String"}],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
@@ -1106,6 +1233,10 @@ const signatures =
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
     \\ "input_output_types":[["Int","String"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty close","description":"End a terminal's program (SIGHUP, then SIGKILL after two seconds) and free the terminal. Its handle is never reused.","extra_description":"","search_terms":[],
+    \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
     \\{"sig":{"name":"ghostty info","description":"A terminal's size, row count, write count and whether its program runs.","extra_description":"","search_terms":[],
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
@@ -1173,6 +1304,7 @@ fn hello(line: []const u8) void {
 pub fn main() void {
     _ = c.pthread_mutex_init(&out_lock, null);
     _ = c.pthread_mutex_init(&terms_lock, null);
+    _ = c.pthread_mutex_init(&all_lock, null);
     // A program that exits mid-write must not kill the plugin: with a handler
     // in place, the write fails with EPIPE instead. (SIG_IGN is a cast macro
     // translate-c cannot carry.)
