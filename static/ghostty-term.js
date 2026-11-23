@@ -326,10 +326,25 @@ rocket("ghostty-term", {
       cursorEl.style.left = c.x * (cell?.w || 8) + "px";
       cursorEl.style.width = (cell?.w || 8) + "px";
       cursorEl.style.height = rowH() + "px";
+      // Blinks, as Ghostty's does; solid again whenever it moves.
+      const at = cursorEl.style.top + cursorEl.style.left;
+      if (cursorEl.dataset.at !== at) {
+        cursorEl.dataset.at = at;
+        cursorEl.classList.remove("blink"); void cursorEl.offsetWidth; cursorEl.classList.add("blink");
+      }
     };
     on("focusin", drawCursor);
     on("focusout", () => setTimeout(drawCursor));
 
+    // Scrolling up stops the following at once, from the gesture itself. Told
+    // only by the scroll event, fast output loses it: a tick moves the view
+    // to the bottom between your scroll and its event, and the event then
+    // reads as the element's own move (n2 #6958).
+    const unstick = () => { if (st.stick) setStick(false); };
+    box.addEventListener("wheel", (ev) => { if (ev.deltaY < 0 && (!grabbed() || ev.shiftKey)) unstick(); }, { passive: true });
+    box.addEventListener("touchmove", unstick, { passive: true });
+    // A press on the scrollbar, which sits outside the content box.
+    box.addEventListener("pointerdown", (ev) => { if (ev.offsetX > box.clientWidth) unstick(); });
     box.addEventListener("scroll", () => {
       if (box.scrollTop !== lastWrote) {
         lastScroll = performance.now();

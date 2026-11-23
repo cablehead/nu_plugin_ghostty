@@ -32,6 +32,10 @@ ghostty-term .win, ghostty-term .win > div {
 }
 ghostty-term .win > div { white-space: pre; }
 ghostty-term .cursor { position: absolute; background: var(--term-cursor); opacity: 0.6; pointer-events: none; }
+/* A blink as Ghostty's: on, then off, every 600ms, starting solid. */
+ghostty-term .cursor.blink { animation: ghostty-blink 1.2s steps(1, end) 0.6s infinite; }
+@keyframes ghostty-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { ghostty-term .cursor.blink { animation: none; } }
 ghostty-term .compose { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
 ghostty-term:focus-within { outline: 1px solid #4b6fa8; }
 /* While the program holds the mouse and this terminal has focus, clicks go to
