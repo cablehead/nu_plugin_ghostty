@@ -43,4 +43,4 @@ ghostty-term.grabbed.shift:focus-within .scroll { cursor: text; }
    (which moves no text) closes the seam between rows. */
 ghostty-term .win > div > div { padding-block: 1px; }
 /* Links: the run's own colour, underlined, the hand over them. */
-ghostty-term .win a { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+ghostty-term .win a[href] { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }

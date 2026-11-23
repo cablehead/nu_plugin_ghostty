@@ -3,7 +3,7 @@
 //
 //   let t = ghostty spawn [bash -l] --cols 100 --rows 30
 //   $t | ghostty input "ls\r"
-//   $t | ghostty window 0 30 --fp $fp     # {fp, top, total, rows, cols, html} or {unchanged: true}
+//   $t | ghostty window 0 30 --fp $fp     # {fp, top, total, rows, cols, links, html} or {unchanged: true}
 //   $t | ghostty changes                  # one record each time the program writes
 //   $t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
 //   $t | ghostty paste "two\nlines"       # bracketed when the program asked
@@ -139,6 +139,8 @@ const max_subs = 16;
 const Term = struct {
     t: c.GhosttyTerminal,
     fmt: c.GhosttyFormatter,
+    /// plain text of rows, for finding web addresses in them
+    pfmt: c.GhosttyFormatter = null,
     enc: c.GhosttyKeyEncoder = null,
     menc: c.GhosttyMouseEncoder = null,
     fd: c_int,
@@ -255,6 +257,7 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
     _ = c.ghostty_terminal_set(term.t, c.GHOSTTY_TERMINAL_OPT_USERDATA, @ptrCast(term));
     _ = c.ghostty_terminal_set(term.t, c.GHOSTTY_TERMINAL_OPT_WRITE_PTY, @ptrCast(@constCast(&onWritePty)));
     if (c.ghostty_formatter_terminal_new(null, &term.fmt, term.t) != c.GHOSTTY_SUCCESS) return error.FormatterFailed;
+    if (c.ghostty_formatter_terminal_new(null, &term.pfmt, term.t) != c.GHOSTTY_SUCCESS) return error.FormatterFailed;
     if (c.ghostty_key_encoder_new(null, &term.enc) != c.GHOSTTY_SUCCESS) return error.EncoderFailed;
     if (c.ghostty_mouse_encoder_new(null, &term.menc) != c.GHOSTTY_SUCCESS) return error.EncoderFailed;
     var emit: c.GhosttyFormatterFormat = c.GHOSTTY_FORMATTER_FORMAT_HTML;
@@ -286,7 +289,7 @@ fn modeOn(term: *Term, mode: c.GhosttyMode) bool {
     return m.value;
 }
 
-fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total: *i64, cursor: *Cursor) ![]u8 {
+fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total: *i64, cursor: *Cursor, links: *std.ArrayList(Link)) ![]u8 {
     _ = c.pthread_mutex_lock(&term.lock);
     defer _ = c.pthread_mutex_unlock(&term.lock);
     var total: usize = 0;
@@ -327,7 +330,189 @@ fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total
     var len: usize = 0;
     if (c.ghostty_formatter_format_alloc(term.fmt, null, &buf, &len) != c.GHOSTTY_SUCCESS) return error.Format;
     defer c.ghostty_free(null, buf, len);
+    try findLinks(term, top, last, t_total, cols, links);
     return try alloc.dupe(u8, buf[0..len]);
+}
+
+// ---- web addresses ------------------------------------------------------
+// Plain addresses in the rows become links, found here rather than in the
+// page, so one that wraps onto the next rows is one link. As WezTerm does
+// (and ptyZZZ with it), rows the terminal soft-wrapped are joined into one
+// line first. The matching is Ghostty's own scheme rule, from
+// src/config/url.zig in the ghostty source:
+//
+//   (?:https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|...)
+//   (?:\[ipv6\](?::port)? | [\w\-.~:/?#@!$&*+,;=%]+ (?:[(\[]\w*[)\]])? )+
+//   (?<![,.])
+//
+// so "https://en.wikipedia.org/wiki/Rust_(video_game)" keeps its bracket and
+// a sentence's full stop is left out. Of what matches, only http, https and
+// mailto become links (ptyZZZ's safe_href), as a page can't open the rest.
+
+/// One piece of a link, in one row of the window: `row` counts from the
+/// window's top; `from` and `to` are offsets in the row's text, in UTF-16
+/// units, as a browser counts. A link that wraps has a piece in each row.
+const Link = struct { row: i64, from: usize, to: usize, url: []u8 };
+
+const schemes = [_][]const u8{ "https://", "http://", "mailto:", "ftp://", "file:", "ssh:", "git://", "ssh://", "tel:", "magnet:", "ipfs://", "ipns://", "gemini://", "gopher://", "news:" };
+
+fn isWordByte(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_' or b >= 0x80;
+}
+
+fn isUrlByte(b: u8) bool {
+    return isWordByte(b) or std.mem.indexOfScalar(u8, "-.~:/?#@!$&*+,;=%", b) != null;
+}
+
+fn isHexOrColon(b: u8) bool {
+    return std.ascii.isHex(b) or b == ':';
+}
+
+/// The end of the address that starts at `i`, if one does.
+fn urlAt(s: []const u8, i: usize) ?usize {
+    var body: usize = 0;
+    for (schemes) |sc| {
+        if (std.mem.startsWith(u8, s[i..], sc)) {
+            body = i + sc.len;
+            break;
+        }
+    } else return null;
+    var j = body;
+    while (j < s.len) {
+        if (s[j] == '[') {
+            // an IPv6 host: [::1] or [::1]:8080
+            var k = j + 1;
+            while (k < s.len and isHexOrColon(s[k])) k += 1;
+            if (k > j + 1 and k < s.len and s[k] == ']') {
+                k += 1;
+                if (k + 1 < s.len and s[k] == ':' and std.ascii.isDigit(s[k + 1])) {
+                    k += 1;
+                    while (k < s.len and std.ascii.isDigit(s[k])) k += 1;
+                }
+                j = k;
+                continue;
+            }
+            break;
+        }
+        if (!isUrlByte(s[j])) break;
+        while (j < s.len and isUrlByte(s[j])) j += 1;
+        // a bracketed word just after, such as "(video_game)"
+        if (j < s.len and (s[j] == '(' or s[j] == '[')) {
+            var k = j + 1;
+            while (k < s.len and isWordByte(s[k])) k += 1;
+            if (k < s.len and (s[k] == ')' or s[k] == ']')) j = k + 1;
+        }
+    }
+    // (?<![,.]): give back a trailing comma or full stop
+    while (j > body and (s[j - 1] == ',' or s[j - 1] == '.')) j -= 1;
+    return if (j > body) j else null;
+}
+
+fn linkable(url: []const u8) bool {
+    for ([_][]const u8{ "http://", "https://", "mailto:" }) |p| {
+        if (url.len >= p.len and std.ascii.eqlIgnoreCase(url[0..p.len], p)) return true;
+    }
+    return false;
+}
+
+/// UTF-16 units in UTF-8 text, as a browser's string offsets count.
+fn utf16Len(b: []const u8) usize {
+    var n: usize = 0;
+    for (b) |x| {
+        if (x & 0xC0 != 0x80) n += if (x >= 0xF0) 2 else 1;
+    }
+    return n;
+}
+
+fn rowFlags(term: *Term, y: i64) struct { wrap: bool, cont: bool } {
+    var p: c.GhosttyPoint = .{ .tag = c.GHOSTTY_POINT_TAG_SCREEN };
+    p.value.coordinate = .{ .x = 0, .y = @intCast(y) };
+    var ref: c.GhosttyGridRef = .{};
+    if (c.ghostty_terminal_grid_ref(term.t, p, &ref) != c.GHOSTTY_SUCCESS) return .{ .wrap = false, .cont = false };
+    var row: c.GhosttyRow = 0;
+    if (c.ghostty_grid_ref_row(&ref, &row) != c.GHOSTTY_SUCCESS) return .{ .wrap = false, .cont = false };
+    var wrap: bool = false;
+    var cont: bool = false;
+    _ = c.ghostty_row_get(row, c.GHOSTTY_ROW_DATA_WRAP, &wrap);
+    _ = c.ghostty_row_get(row, c.GHOSTTY_ROW_DATA_WRAP_CONTINUATION, &cont);
+    return .{ .wrap = wrap, .cont = cont };
+}
+
+/// The links in rows top..last, reading as far above and below as the
+/// lines they're part of run. Call with the terminal locked.
+fn findLinks(term: *Term, top: i64, last: i64, total: i64, cols: u16, links: *std.ArrayList(Link)) !void {
+    var y0 = top;
+    while (y0 > 0 and rowFlags(term, y0).cont) y0 -= 1;
+    var y1 = last;
+    while (y1 < total - 1 and rowFlags(term, y1).wrap) y1 += 1;
+    const n: usize = @intCast(y1 - y0 + 1);
+
+    var sel: c.GhosttySelection = .{};
+    var p: c.GhosttyPoint = .{ .tag = c.GHOSTTY_POINT_TAG_SCREEN };
+    p.value.coordinate = .{ .x = 0, .y = @intCast(y0) };
+    if (c.ghostty_terminal_grid_ref(term.t, p, &sel.start) != c.GHOSTTY_SUCCESS) return;
+    p.value.coordinate = .{ .x = if (cols > 0) cols - 1 else 0, .y = @intCast(y1) };
+    if (c.ghostty_terminal_grid_ref(term.t, p, &sel.end) != c.GHOSTTY_SUCCESS) return;
+    _ = c.ghostty_formatter_set(term.pfmt, c.GHOSTTY_FORMATTER_OPT_SELECTION, &sel);
+    var buf: [*c]u8 = null;
+    var len: usize = 0;
+    if (c.ghostty_formatter_format_alloc(term.pfmt, null, &buf, &len) != c.GHOSTTY_SUCCESS) return;
+    defer c.ghostty_free(null, buf, len);
+
+    // the rows' text, one line per row (blank rows at the end are left out)
+    var rows_text: std.ArrayList([]const u8) = .empty;
+    defer rows_text.deinit(alloc);
+    var it = std.mem.splitScalar(u8, buf[0..len], '\n');
+    while (it.next()) |line| {
+        if (rows_text.items.len == n) break;
+        try rows_text.append(alloc, line);
+    }
+
+    var joined: std.ArrayList(u8) = .empty;
+    defer joined.deinit(alloc);
+    var starts: std.ArrayList(usize) = .empty;
+    defer starts.deinit(alloc);
+    var r: usize = 0;
+    while (r < rows_text.items.len) {
+        // one line: this row and the rows it wraps onto
+        joined.clearRetainingCapacity();
+        starts.clearRetainingCapacity();
+        const first = r;
+        while (true) {
+            try starts.append(alloc, joined.items.len);
+            try joined.appendSlice(alloc, rows_text.items[r]);
+            const wraps = rowFlags(term, y0 + @as(i64, @intCast(r))).wrap;
+            r += 1;
+            if (!wraps or r >= rows_text.items.len) break;
+        }
+        try starts.append(alloc, joined.items.len);
+        const s = joined.items;
+        var i: usize = 0;
+        while (i < s.len) {
+            const end = urlAt(s, i) orelse {
+                i += 1;
+                continue;
+            };
+            if (linkable(s[i..end])) {
+                for (0..starts.items.len - 1) |k| {
+                    const rs = starts.items[k];
+                    const re = starts.items[k + 1];
+                    const a = @max(i, rs);
+                    const b = @min(end, re);
+                    if (a >= b) continue;
+                    const y = y0 + @as(i64, @intCast(first + k));
+                    if (y < top or y > last) continue;
+                    try links.append(alloc, .{
+                        .row = y - top,
+                        .from = utf16Len(s[rs..a]),
+                        .to = utf16Len(s[rs..b]),
+                        .url = try alloc.dupe(u8, s[i..end]),
+                    });
+                }
+            }
+            i = end;
+        }
+    }
 }
 
 /// A browser KeyboardEvent.code, such as "ArrowUp", "KeyA" or "Digit1", as
@@ -687,10 +872,24 @@ fn run(id: i64, r: V) void {
         var out_top: i64 = 0;
         var total: i64 = 0;
         var cursor: Cursor = .{};
-        const html = windowHtml(term, top, height, &out_top, &total, &cursor) catch |e| return respondError(id, @errorName(e), s);
+        var links: std.ArrayList(Link) = .empty;
+        defer {
+            for (links.items) |l| alloc.free(l.url);
+            links.deinit(alloc);
+        }
+        const html = windowHtml(term, top, height, &out_top, &total, &cursor, &links) catch |e| return respondError(id, @errorName(e), s);
         defer alloc.free(html);
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(html);
+        // a link can change with a row just outside the window it wraps onto
+        for (links.items) |l| {
+            hasher.update(l.url);
+            var lb: [24]u8 = undefined;
+            std.mem.writeInt(i64, lb[0..8], l.row, .little);
+            std.mem.writeInt(u64, lb[8..16], l.from, .little);
+            std.mem.writeInt(u64, lb[16..24], l.to, .little);
+            hasher.update(&lb);
+        }
         var tb: [16]u8 = undefined;
         std.mem.writeInt(i64, tb[0..8], out_top, .little);
         std.mem.writeInt(i64, tb[8..16], total, .little);
@@ -733,6 +932,24 @@ fn run(id: i64, r: V) void {
         j.raw("}}");
         j.raw(",\"mouse\":");
         boolV(&j, cursor.mouse, s);
+        j.raw(",\"links\":{\"List\":{\"vals\":[");
+        for (links.items, 0..) |l, k| {
+            if (k > 0) j.raw(",");
+            j.raw("{\"Record\":{\"val\":{\"row\":");
+            intV(&j, l.row, s);
+            j.raw(",\"from\":");
+            intV(&j, @intCast(l.from), s);
+            j.raw(",\"to\":");
+            intV(&j, @intCast(l.to), s);
+            j.raw(",\"url\":");
+            strV(&j, l.url, s);
+            j.raw("},\"span\":");
+            spanJ(&j, s);
+            j.raw("}}");
+        }
+        j.raw("],\"span\":");
+        spanJ(&j, s);
+        j.raw("}}");
         j.raw(",\"html\":");
         strV(&j, html, s);
         j.raw("},\"span\":");

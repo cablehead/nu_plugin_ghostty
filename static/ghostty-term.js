@@ -87,33 +87,55 @@ document.addEventListener("copy", (ev) => {
   ev.preventDefault();
 });
 
-// Web addresses in the rows become links, as terminals make them clickable.
-// A link the program sent itself (OSC 8) already arrives as an <a> from
-// libghostty; this finds the plain ones in the text around them. Every link
+// Links in the rows. The plugin finds plain web addresses (`links` in the
+// window: a row of the window, and a range of that row's text), joining the
+// rows a long address wraps across, so each piece of it is a link to the
+// whole address. A link the program sent itself (OSC 8) already arrives as
+// an <a> from libghostty. Only http, https and mailto links stay links, as
+// ptyZZZ does: OSC 8 can carry any scheme, javascript: included. Every link
 // opens in a new tab.
-const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?)\]}]/g;
-function linkify(root) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => n.parentElement?.closest("a") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-  });
-  const hits = [];
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (URL_RE.test(n.data)) hits.push(n);
-  for (const n of hits) {
-    URL_RE.lastIndex = 0;
-    const frag = document.createDocumentFragment();
-    let at = 0;
-    for (const m of n.data.matchAll(URL_RE)) {
-      if (m.index > at) frag.append(n.data.slice(at, m.index));
-      const a = document.createElement("a");
-      a.href = m[0];
-      a.textContent = m[0];
-      frag.append(a);
-      at = m.index + m[0].length;
-    }
-    if (at < n.data.length) frag.append(n.data.slice(at));
-    n.replaceWith(frag);
+const SAFE_HREF = /^(https?:\/\/|mailto:)/i;
+function applyLinks(root, links) {
+  for (const a of root.querySelectorAll("a[href]")) {
+    if (SAFE_HREF.test(a.getAttribute("href").trim())) { a.target = "_blank"; a.rel = "noopener"; }
+    else a.removeAttribute("href");
   }
-  for (const a of root.querySelectorAll("a[href]")) { a.target = "_blank"; a.rel = "noopener"; }
+  if (!links?.length) return;
+  const byRow = new Map();
+  for (const l of links) {
+    if (!SAFE_HREF.test(l.url)) continue;
+    if (!byRow.has(l.row)) byRow.set(l.row, []);
+    byRow.get(l.row).push(l);
+  }
+  // Walk the text in order: a newline starts the next row.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+  let row = 0, col = 0;
+  for (const n of nodes) {
+    const parts = n.data.split("\n");
+    const inLink = !!n.parentElement?.closest("a");
+    const frag = document.createDocumentFragment();
+    parts.forEach((part, i) => {
+      if (i > 0) { frag.append("\n"); row += 1; col = 0; }
+      const here = inLink ? [] : (byRow.get(row) || []).filter((l) => l.to > col && l.from < col + part.length)
+        .sort((x, y) => x.from - y.from);
+      let at = 0;
+      for (const l of here) {
+        const a0 = Math.max(l.from - col, at), b0 = Math.min(l.to - col, part.length);
+        if (b0 <= a0) continue;
+        if (a0 > at) frag.append(part.slice(at, a0));
+        const a = document.createElement("a");
+        a.href = l.url; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = part.slice(a0, b0);
+        frag.append(a);
+        at = b0;
+      }
+      if (at < part.length) frag.append(part.slice(at));
+      col += part.length;
+    });
+    if (!inLink || parts.length > 1) n.replaceWith(frag);
+  }
 }
 
 rocket("ghostty-term", {
@@ -244,7 +266,7 @@ rocket("ghostty-term", {
           const y = docY();
           const old = g;
           win.innerHTML = r.html;
-          linkify(win);
+          applyLinks(win, r.links);
           st.top = r.top; st.h = w.h; st.fp = r.fp;
           st.cols = r.cols; st.total = r.total; st.rows = r.rows;
           st.cursor = r.cursor;

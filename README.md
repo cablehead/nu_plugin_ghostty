@@ -9,7 +9,7 @@ window of a diff.
 ```nu
 let t = ghostty spawn [bash -l] --cols 100 --rows 30
 $t | ghostty input "ls\r"
-$t | ghostty window 1200 30            # {fp, top, total, rows, cols, html}
+$t | ghostty window 1200 30            # {fp, top, total, rows, cols, links, html}
 $t | ghostty window 1200 30 --fp $fp   # {unchanged: true} when it is
 $t | ghostty changes                   # a stream, one {seq} each time the program writes
 $t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
@@ -32,6 +32,15 @@ scroll area is squeezed as largediff-go-brr's `/anchor/` is: at most `cap`
 pixels (12,000,000 by default), the rows it holds at their real height and the
 gaps around them squeezed. Mouse and focus reports reach the program only when
 it asked for them, and Shift keeps native selection.
+
+Web addresses in the rows are links. `ghostty window` finds them in the
+terminal's text, joining the rows a long address wraps across, as WezTerm and
+ptyZZZ do, and matching with Ghostty's own scheme rule (`src/config/url.zig`),
+so a bracketed part such as `Rust_(video_game)` stays in and a sentence's full
+stop stays out. Each is `{row, from, to, url}`: a row of the window, and a
+range of that row's text, one for each row the address spans. Only http, https
+and mailto become links, the ones the program sent with OSC 8 included, and
+they open in a new tab.
 
 `demo/term.nu` serves one terminal with it:
 
