@@ -1,26 +1,26 @@
 # nu_plugin_ghostty
 
-nu_plugin_ghostty keeps terminals on the server and sends the browser plain HTML of them. The browser runs no terminal emulator: no xterm.js, no ghostty-web. The plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library. The page asks the plugin for the rows it is showing, and the plugin answers with those rows as HTML, in their colours. Rows that have scrolled off the top stay on the server, so the page can scroll back through them. `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, is the page's side of this. It shows the rows and sends your keys back to the plugin.
+nu_plugin_ghostty projects terminals into a web page as plain HTML. The terminal itself stays on the server, in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library. The browser runs no terminal emulator: no xterm.js, no ghostty-web. It shows the HTML it is sent and sends your keys back.
 
-You put a projected terminal in a page with the `<ghostty-term>` tag, pointed at the address that serves it:
+![The panes demo: commands in nu, then asciiquarium, the matrix and a mandelbrot in their own panes, moved between and zoomed](demo/panes.webp)
+
+## The projection
+
+The plugin runs each program in a libghostty-vt terminal on the server. The page asks for the rows it is showing, and the plugin answers with those rows as HTML, in their colours. Rows that scroll off the top stay on the server, so the page can scroll back through all of them while it holds only what is in view. Each time the program writes, the plugin sends a tick, and the page asks again for the rows it shows.
+
+## ghostty-term
+
+`<ghostty-term>` is the page's side of the projection: a [Datastar Rocket](https://data-star.dev) web component in `static/ghostty-term.js`, modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`. It parses no escape codes and keeps no terminal state; it places the rows the server sends. You put a projected terminal in a page with the tag, pointed at the address that serves it:
 
 ```html
 <ghostty-term src="/term"></ghostty-term>
 ```
 
-[http-nu](https://github.com/cablehead/http-nu) serves `/term`, calling the plugin:
+The element listens for ticks on `{src}/live`, asks `{src}/win` for rows, and posts keys, text, pastes and its size to `{src}/input`. It fits the terminal to its box, follows the live output, and stops following when you scroll up. Hold Shift to select text when the program has taken the mouse.
 
-```nu
-let t = ghostty spawn [bash -l] --cols 100 --rows 30
-$t | ghostty input "ls\r"
-$t | ghostty window 0 30      # rows 0 to 29, as HTML
-```
+## The plugin
 
-`demo/term.nu` is the whole server for one terminal.
-
-![The panes demo: commands in nu, then asciiquarium, the matrix and a mandelbrot in their own panes, moved between and zoomed](demo/panes.webp)
-
-## Commands
+[http-nu](https://github.com/cablehead/http-nu) serves those addresses by calling the plugin. `demo/term.nu` is a whole server for one terminal.
 
 ```nu
 ghostty spawn [bash -l] --cols 100 --rows 30   # start a program; returns its handle
@@ -30,40 +30,32 @@ $t | ghostty paste "two\nlines"                # paste, bracketed if the program
 $t | ghostty resize 120 40
 $t | ghostty mouse press --button left --x 4 --y 2
 $t | ghostty focus true
-$t | ghostty window 1200 30                    # {fp, top, total, rows, cols, links, html}
+$t | ghostty window 1200 30                    # rows from 1200, as HTML: {fp, top, total, rows, cols, links, html}
 $t | ghostty window 1200 30 --fp $fp           # {unchanged: true} if nothing changed
-$t | ghostty changes                           # a stream: one record each time the program writes
+$t | ghostty changes                           # the ticks: a record each time the program writes
 $t | ghostty palette                           # the <style> block the HTML's colours refer to
 $t | ghostty info                              # {total, rows, cols, seq, alive}, and the exit code once it ends
 $t | ghostty close                             # end the program; its handle is never used again
-ghostty changes --all                          # every terminal's changes on one stream
+ghostty changes --all                          # every terminal's ticks on a single stream
 ```
 
-Row 0 is the oldest line kept. A terminal keeps 10,000 lines of scrollback unless you pass `--scrollback`.
-
-Mouse and focus reports reach the program only when it asked for them, the same as in a real terminal.
+Row 0 is the oldest line kept. A terminal keeps 10,000 lines of scrollback unless you pass `--scrollback`. Mouse and focus reports reach the program only when it asked for them, as in any terminal.
 
 ## Links
 
-`ghostty window` finds web addresses in the text and returns them as `links`, so the page can make them clickable. An address that wraps across several rows is still found whole. It uses Ghostty's own rule for where an address ends, so `Rust_(video_game)` keeps its brackets and a full stop after an address is left out. Only http, https and mailto addresses become links, including ones the program marked itself with OSC 8.
-
-## ghostty-term
-
-`static/ghostty-term.js` is the element. It's modelled on [ptyZZZ](https://github.com/cablehead/ptyZZZ)'s `<pty-term>`. It parses no escape codes and keeps no terminal state: it places the HTML rows the server sends.
-
-It sizes the terminal to fit its box, follows the live output, and stops following when you scroll up. It asks `{src}/win` for the rows at its scroll position and keeps only those in the page, so a long history doesn't slow the page down. Keys, composed text and paste go to `{src}/input`. Hold Shift to select text when the program has taken the mouse.
+`ghostty window` finds web addresses in the terminal's text and returns them as `links`, so the page can make them clickable. An address that wraps across rows is still found whole. The plugin uses Ghostty's own rule for where an address ends, so `Rust_(video_game)` keeps its brackets and a full stop after an address is left out. Only http, https and mailto addresses become links, including the ones a program marks itself with OSC 8.
 
 ## Demos
 
 The demos run under http-nu with `--datastar-rocket`.
 
-`demo/term.nu` is one terminal in a page:
+`demo/term.nu` projects one terminal into a page:
 
 ```sh
 http-nu --datastar-rocket --plugin ./nu_plugin_ghostty 127.0.0.1:3012 demo/term.nu
 ```
 
-`demo/panes.nu` is many terminals in columns, after [ptyZZZ's panes example](https://github.com/cablehead/ptyZZZ/tree/main/examples/panes). You open, split and close panes while the page is up, and every open window follows along. Press Cmd+K to see the keys. All the terminals share one connection to the server. Each pane runs `nu` if it's on your PATH, or your login shell if not; set `GHX_PANE_CMD` to run something else.
+`demo/panes.nu` projects many, in columns, after [ptyZZZ's panes example](https://github.com/cablehead/ptyZZZ/tree/main/examples/panes). You open, split and close panes while the page is up, and every open window follows along. Cmd+K shows the keys. Every pane's ticks reach the page on a single stream. Each pane runs `nu` if it's on your PATH, or your login shell if not; `GHX_PANE_CMD` runs something else.
 
 ```sh
 http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1:3015 demo/panes.nu
@@ -71,7 +63,7 @@ http-nu --datastar-rocket --store ./store --plugin ./nu_plugin_ghostty 127.0.0.1
 
 ## Build
 
-You need Zig 0.17.1 and libghostty-vt 1.0.1, which comes as `ghostty-vt-1.0.1.xcframework.zip` from <https://release.files.ghostty.org/libghostty-vt/1.0.1/>. Unzip it and point `VT` at its macOS directory:
+The build needs Zig 0.17.1 and libghostty-vt 1.0.1, which comes as `ghostty-vt-1.0.1.xcframework.zip` from <https://release.files.ghostty.org/libghostty-vt/1.0.1/>. Unzip it and point `VT` at its macOS directory:
 
 ```sh
 VT=path/to/ghostty-vt.xcframework/macos-arm64_x86_64 ZIG=path/to/zig ./build.sh
