@@ -2,7 +2,7 @@
 
 nu_plugin_ghostty keeps terminals on the server and sends the browser plain HTML of them. The browser runs no terminal emulator: no xterm.js, no ghostty-web. The plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library. The page asks the plugin for the rows it is showing, and the plugin answers with those rows as HTML, in their colours. Rows that have scrolled off the top stay on the server, so the page can scroll back through them. `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, is the page's side of this. It shows the rows and sends your keys back to the plugin.
 
-A page needs one tag for a terminal:
+You put a projected terminal in a page with the `<ghostty-term>` tag, pointed at the address that serves it:
 
 ```html
 <ghostty-term src="/term"></ghostty-term>
@@ -55,7 +55,7 @@ It sizes the terminal to fit its box, follows the live output, and stops followi
 
 ## Demos
 
-Both demos run under http-nu with `--datastar-rocket`.
+The demos run under http-nu with `--datastar-rocket`.
 
 `demo/term.nu` is one terminal in a page:
 
