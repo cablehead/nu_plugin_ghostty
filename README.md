@@ -18,7 +18,7 @@ $t | ghostty window 0 30      # rows 0 to 29, as HTML
 
 `demo/term.nu` is the whole server for one terminal.
 
-![Two columns of terminals in a browser, from demo/panes.nu](demo/panes.png)
+![The panes demo: commands in nu, then asciiquarium, the matrix and a mandelbrot in their own panes, moved between and zoomed](demo/panes.webp)
 
 ## Commands
 
