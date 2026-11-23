@@ -1,14 +1,14 @@
 # nu_plugin_ghostty
 
-Ghostty in a web page, as plain HTML. There's no terminal emulator in the browser: no xterm.js, no ghostty-web. The terminal lives on the server. This Nushell plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and projects its screen as plain HTML: the rows the page is scrolled to, scrollback included, colours and all. In the browser, `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, shows those rows and sends your keys back.
+nu_plugin_ghostty keeps terminals on the server and sends the browser plain HTML of them. The browser runs no terminal emulator: no xterm.js, no ghostty-web. The plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and turns the rows the page is scrolled to into HTML, scrollback and colours included. `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, shows those rows in the page and sends your keys back.
 
-In the page, a terminal is one tag:
+A page needs one tag for a terminal:
 
 ```html
 <ghostty-term src="/term"></ghostty-term>
 ```
 
-Behind `/term`, [http-nu](https://github.com/cablehead/http-nu) answers with the plugin:
+[http-nu](https://github.com/cablehead/http-nu) serves `/term`, calling the plugin:
 
 ```nu
 let t = ghostty spawn [bash -l] --cols 100 --rows 30
