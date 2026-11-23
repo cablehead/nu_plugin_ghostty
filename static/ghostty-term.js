@@ -14,16 +14,32 @@
 //                              cols, cursor, html}, or {unchanged: true}
 //   POST {src}/input           NDJSON frames: {t:"key", code, key, mods},
 //                              {t:"text", s}, {t:"paste", s},
-//                              {t:"resize", cols, rows}
+//                              {t:"resize", cols, rows},
+//                              {t:"mouse", kind, button, x, y, mods},
+//                              {t:"focus", on}
 //
 // Only the last `rows` rows of a terminal (its active area) can change. Rows
 // above it are history and stay as they were. So a tick only costs a request
 // when the page shows some of the active area, or follows the output; scrolled
 // back into history, a tick just lengthens the scrollbar.
 //
+// The scroll area is squeezed, after largediff-go-brr's /anchor/ (itself after
+// CodeMirror 6's BigScaler): a browser can't make an element millions of pixels
+// tall, so the spacer is at most `cap` pixels. The rows the page holds sit at
+// their real height, and the gaps above and below them are squeezed, so
+// scrolling among them is the browser's own, 1:1. A new window mid-gesture is
+// placed where the row at the top of the view already is, so nothing moves and
+// scrollTop is not written; at rest the gaps go back to the even squeeze.
+//
+// Mouse and focus, as ptyZZZ's <pty-term> has them: the terminal captures the
+// mouse only while the program asked for mouse reports and the terminal has
+// focus, and never with Shift held, which keeps native selection and scroll.
+// Focus in and out go to the program only when it asked for them.
+//
 // Props:
 //   src    the server path above
 //   nofit  observe without resizing the terminal
+//   cap    the most pixels the scroll area takes (default 12,000,000)
 //
 // Host API:
 //   park()    put focus on this terminal, so typed keys go to it
@@ -59,11 +75,24 @@ function keyFrame(ev) {
   return null;
 }
 
+// Rows are padded with spaces to the terminal's width; strip trailing space
+// per line, so a copy matches what a terminal would give.
+document.addEventListener("copy", (ev) => {
+  const sel = getSelection();
+  if (!sel || !sel.anchorNode?.parentElement?.closest("ghostty-term")) return;
+  const text = sel.toString();
+  const trimmed = text.split("\n").map((l) => l.replace(/[ \t]+$/, "")).join("\n");
+  if (!text || trimmed === text) return;
+  ev.clipboardData?.setData("text/plain", trimmed);
+  ev.preventDefault();
+});
+
 rocket("ghostty-term", {
   mode: "light",
   props: ({ string, bool }) => ({
     src: string.trim,
     nofit: bool,
+    cap: string.trim,
   }),
   setup: ({ host, props, cleanup, defineHostProp }) => {
     const src = props.src.replace(/\/$/, "");
@@ -103,9 +132,51 @@ rocket("ghostty-term", {
     const viewRows = () => Math.max(1, Math.ceil(box.clientHeight / rowH()));
     const activeTop = () => Math.max(0, st.total - st.rows);
 
+    // ---- the squeeze. Document pixels are rows * rowH; scroller pixels are
+    // the capped spacer's. g: {o, b, total, span, dTop, dBot}: the window's
+    // document top and bottom, the document and spacer heights, and where the
+    // window sits in the spacer.
+    const REST = 300;
+    let g = null, lastScroll = 0, restTimer = 0;
+    const geo = (dTop) => {
+      const total = st.total * rowH();
+      const span = Math.max(Math.min(total, Number(props.cap) || 12_000_000), box.clientHeight);
+      const o = Math.max(0, st.top) * rowH();
+      const b = o + Math.max(0, st.h) * rowH();
+      const wh = b - o;
+      if (!(total > span && span > wh)) return { o, b, total, span: Math.max(total, 1), dTop: o, dBot: b };
+      const even = Math.round(o * (span - wh) / (total - wh));
+      const top = Math.min(Math.max(dTop ?? even, 0), span - wh);
+      return { o, b, total, span, dTop: top, dBot: top + wh };
+    };
+    const fromDOM = (g, n) => {
+      if (n < g.dTop) return g.dTop > 0 ? n * g.o / g.dTop : 0;
+      if (n <= g.dBot) return g.o + (n - g.dTop);
+      const gap = g.span - g.dBot;
+      return gap > 0 ? g.b + (n - g.dBot) * (g.total - g.b) / gap : g.b;
+    };
+    const toDOM = (g, y) => {
+      if (y < g.o) return g.o > 0 ? y * g.dTop / g.o : 0;
+      if (y <= g.b) return g.dTop + (y - g.o);
+      const gap = g.total - g.b;
+      return gap > 0 ? g.dBot + (y - g.b) * (g.span - g.dBot) / gap : g.dBot;
+    };
+    // Show geometry `next` with document pixel y at the top of the view.
+    const place = (next, y) => {
+      g = next;
+      spacer.style.height = g.span + "px";
+      win.style.top = g.dTop + "px";
+      drawCursor();
+      if (y == null) return;
+      const t = toDOM(g, y);
+      if (Math.abs(box.scrollTop - t) > 1) { box.scrollTop = t; lastWrote = box.scrollTop; }
+    };
+    // The document pixel at the top of the view.
+    const docY = () => fromDOM(g || geo(null), box.scrollTop);
+
     // The rows the page wants: those in view plus a screenful either side.
     const wanted = () => {
-      const first = Math.floor(box.scrollTop / rowH());
+      const first = Math.floor(docY() / rowH());
       const n = viewRows();
       return { top: Math.max(0, first - n), h: n * 3 };
     };
@@ -115,7 +186,8 @@ rocket("ghostty-term", {
     const setTotal = (total, rows) => {
       st.total = total;
       if (rows) st.rows = rows;
-      spacer.style.height = total * rowH() + "px";
+      // Following, the bottom is the place; otherwise keep the row at the top.
+      place(geo(g ? g.dTop : null), st.stick ? null : docY());
     };
 
     // ---- following the output
@@ -140,13 +212,23 @@ rocket("ghostty-term", {
         const res = await fetch(`${src}/win?${q}`);
         const r = await res.json();
         if (!r.unchanged) {
+          const y = docY();
+          const old = g;
           win.innerHTML = r.html;
-          win.style.top = r.top * rowH() + "px";
           st.top = r.top; st.h = w.h; st.fp = r.fp;
-          st.cols = r.cols;
-          setTotal(r.total, r.rows);
+          st.cols = r.cols; st.total = r.total; st.rows = r.rows;
           st.cursor = r.cursor;
-          drawCursor();
+          st.mouse = r.mouse;
+          if (st.stick) {
+            place(geo(null), null);
+          } else if (performance.now() - lastScroll >= REST || !old) {
+            place(geo(null), y);
+          } else {
+            // Mid-gesture: the row at the top of the view stays where it is.
+            const o = r.top * rowH(), b = o + w.h * rowH();
+            const dTop = y >= o && y <= b ? box.scrollTop - (y - o) : toDOM(old, o);
+            place(geo(dTop), y);
+          }
         }
         if (st.stick) toBottom();
       } catch {}
@@ -159,7 +241,8 @@ rocket("ghostty-term", {
       const show = c && c.visible && host.contains(document.activeElement);
       cursorEl.hidden = !show;
       if (!show) return;
-      cursorEl.style.top = c.y * rowH() + "px";
+      // The cursor's row is a document row: place it within the window.
+      cursorEl.style.top = (g ? g.dTop : 0) + (c.y - Math.max(0, st.top)) * rowH() + "px";
       cursorEl.style.left = c.x * (cell?.w || 8) + "px";
       cursorEl.style.width = (cell?.w || 8) + "px";
       cursorEl.style.height = rowH() + "px";
@@ -168,9 +251,16 @@ rocket("ghostty-term", {
     host.addEventListener("focusout", () => setTimeout(drawCursor));
 
     box.addEventListener("scroll", () => {
-      if (box.scrollTop !== lastWrote) setStick(box.scrollTop >= box.scrollHeight - box.clientHeight - rowH());
+      if (box.scrollTop !== lastWrote) {
+        lastScroll = performance.now();
+        setStick(box.scrollTop >= box.scrollHeight - box.clientHeight - rowH());
+        clearTimeout(restTimer);
+        // At rest, the even squeeze again: one scrollTop write while nothing moves.
+        restTimer = setTimeout(() => { if (!st.stick && g) place(geo(null), docY()); }, REST);
+      }
       if (!covers(wanted())) fetchWindow(true);
     }, { passive: true });
+    cleanup(() => clearTimeout(restTimer));
 
     // ---- the live stream: a tick per write
     const live = new EventSource(`${src}/live`);
@@ -237,6 +327,94 @@ rocket("ghostty-term", {
       ev.preventDefault();
       send({ t: "paste", s: text });
     });
+
+    // ---- focus reports: only a real change, and a press waits for its click
+    let focused = null, pressing = false;
+    const sendFocus = (on) => { if (on === focused) return; focused = on; send({ t: "focus", on }); };
+    host.addEventListener("focusin", () => sendFocus(true));
+    host.addEventListener("focusout", (ev) => { if (!pressing && !host.contains(ev.relatedTarget)) sendFocus(false); });
+    host.addEventListener("pointerdown", () => { pressing = true; }, true);
+    const settle = () => {
+      if (!pressing) return;
+      pressing = false;
+      setTimeout(() => sendFocus(document.hasFocus() && host.contains(document.activeElement)));
+    };
+    addEventListener("pointerup", settle, true);
+    addEventListener("pointercancel", settle, true);
+    cleanup(() => { removeEventListener("pointerup", settle, true); removeEventListener("pointercancel", settle, true); });
+
+    // Shift down shows the text cursor over a grabbed terminal.
+    const shiftState = (ev) => host.classList.toggle("shift", ev.shiftKey);
+    addEventListener("keydown", shiftState, true);
+    addEventListener("keyup", shiftState, true);
+    box.addEventListener("pointermove", shiftState);
+    cleanup(() => { removeEventListener("keydown", shiftState, true); removeEventListener("keyup", shiftState, true); });
+
+    // ---- mouse: captured only while the program asked and this terminal has focus
+    const grabbed = () => st.mouse && host.contains(document.activeElement);
+    host.classList.toggle("grabbed", false);
+    const mods = (ev) => (ev.shiftKey ? 1 : 0) | (ev.altKey ? 2 : 0) | (ev.ctrlKey ? 4 : 0) | (ev.metaKey ? 8 : 0);
+    // The cell under the pointer, in active-area coordinates, clamped to it.
+    const cellAt = (ev) => {
+      if (!cell) return null;
+      const r = win.getBoundingClientRect();
+      const row = Math.max(0, st.top) + Math.floor((ev.clientY - r.top) / cell.h);
+      const x = Math.max(0, Math.min(st.cols - 1, Math.floor((ev.clientX - r.left) / cell.w)));
+      const y = Math.max(0, Math.min(st.rows - 1, row - activeTop()));
+      return { x, y };
+    };
+    const BUTTONS = [["left", 1], ["middle", 4], ["right", 2]];
+    let down = 0, lastCell = null, pendingMove = null;
+    const press = (kind, b, ev) => {
+      const p = cellAt(ev);
+      if (!p) return;
+      lastCell = p.x + "," + p.y;
+      send({ t: "mouse", kind, button: BUTTONS[b][0], ...p, mods: mods(ev) });
+    };
+    box.addEventListener("pointerdown", (ev) => {
+      if (!grabbed() || ev.shiftKey || !BUTTONS[ev.button]) return;
+      ev.preventDefault();
+      try { ta.focus({ preventScroll: true }); } catch {}
+      box.setPointerCapture(ev.pointerId);
+      down |= BUTTONS[ev.button][1];
+      press("press", ev.button, ev);
+    });
+    box.addEventListener("pointermove", (ev) => {
+      if (!down && (!grabbed() || ev.shiftKey)) return;
+      const p = cellAt(ev);
+      if (!p) return;
+      const at = p.x + "," + p.y;
+      if (at === lastCell) return;
+      lastCell = at;
+      send({ t: "mouse", kind: "move", ...p, mods: mods(ev) });
+    });
+    box.addEventListener("pointerup", (ev) => {
+      const bit = BUTTONS[ev.button]?.[1];
+      if (!bit || !(down & bit)) return;
+      down &= ~bit;
+      press("release", ev.button, ev);
+    });
+    box.addEventListener("pointercancel", (ev) => {
+      for (let b = 0; b < BUTTONS.length; b++) if (down & BUTTONS[b][1]) press("release", b, ev);
+      down = 0;
+    });
+    box.addEventListener("contextmenu", (ev) => { if (grabbed() && !ev.shiftKey) ev.preventDefault(); });
+    // Wheel: a step per row of travel, the remainder kept, so a trackpad's
+    // burst of small deltas scrolls by distance, not by event count.
+    let wheelY = 0, wheelX = 0;
+    box.addEventListener("wheel", (ev) => {
+      if (!grabbed() || ev.shiftKey || !cell) return;
+      ev.preventDefault();
+      const [sx, sy] = ev.deltaMode === 1 ? [1, 1] : ev.deltaMode === 2 ? [1 / st.cols, 1 / st.rows] : [cell.w, cell.h];
+      wheelX += ev.deltaX; wheelY += ev.deltaY;
+      const p = cellAt(ev);
+      if (!p) return;
+      const step = (button) => send({ t: "mouse", kind: "press", button, ...p, mods: mods(ev) });
+      for (; wheelY >= sy; wheelY -= sy) step("wheeldown");
+      for (; wheelY <= -sy; wheelY += sy) step("wheelup");
+      for (; wheelX >= sx; wheelX -= sx) step("wheelright");
+      for (; wheelX <= -sx; wheelX += sx) step("wheelleft");
+    }, { passive: false });
 
     // ---- fit the terminal to the box: whole columns and rows
     let lastFit = null;

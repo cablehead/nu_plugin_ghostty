@@ -25,3 +25,4 @@ ghostty-term .win > div { white-space: pre; }
 ghostty-term .cursor { position: absolute; background: var(--term-cursor); opacity: 0.6; pointer-events: none; }
 ghostty-term .compose { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
 ghostty-term:focus-within { outline: 1px solid #4b6fa8; }
+ghostty-term.shift .scroll { cursor: text; }

@@ -7,6 +7,8 @@
 //   $t | ghostty changes                  # one record each time the program writes
 //   $t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
 //   $t | ghostty paste "two\nlines"       # bracketed when the program asked
+//   $t | ghostty mouse press --button left --x 4 --y 2   # reported when the program asked
+//   $t | ghostty focus true                # reported when the program asked
 //   $t | ghostty resize 120 40
 //   $t | ghostty palette                  # the <style> block the HTML's colours refer to
 //   $t | ghostty info
@@ -138,6 +140,7 @@ const Term = struct {
     t: c.GhosttyTerminal,
     fmt: c.GhosttyFormatter,
     enc: c.GhosttyKeyEncoder = null,
+    menc: c.GhosttyMouseEncoder = null,
     fd: c_int,
     pid: c.pid_t,
     lock: c.pthread_mutex_t,
@@ -253,6 +256,7 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
     _ = c.ghostty_terminal_set(term.t, c.GHOSTTY_TERMINAL_OPT_WRITE_PTY, @ptrCast(@constCast(&onWritePty)));
     if (c.ghostty_formatter_terminal_new(null, &term.fmt, term.t) != c.GHOSTTY_SUCCESS) return error.FormatterFailed;
     if (c.ghostty_key_encoder_new(null, &term.enc) != c.GHOSTTY_SUCCESS) return error.EncoderFailed;
+    if (c.ghostty_mouse_encoder_new(null, &term.menc) != c.GHOSTTY_SUCCESS) return error.EncoderFailed;
     var emit: c.GhosttyFormatterFormat = c.GHOSTTY_FORMATTER_FORMAT_HTML;
     _ = c.ghostty_formatter_set(term.fmt, c.GHOSTTY_FORMATTER_OPT_EMIT, &emit);
     var extras: c.GhosttyFormatterExtras = c.GHOSTTY_FORMATTER_EXTRAS_NONE;
@@ -273,7 +277,14 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
 
 /// Rows `top` up to `top + height` of the screen, scrollback included, as
 /// HTML. Caller frees.
-const Cursor = struct { x: i64 = 0, y: i64 = 0, visible: bool = false };
+const Cursor = struct { x: i64 = 0, y: i64 = 0, visible: bool = false, mouse: bool = false };
+
+/// Whether a mode is on. Caller holds the lock.
+fn modeOn(term: *Term, mode: c.GhosttyMode) bool {
+    var m: c.GhosttyTerminalModeConfig = .{ .mode = mode, .value = false };
+    _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_MODE, &m);
+    return m.value;
+}
 
 fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total: *i64, cursor: *Cursor) ![]u8 {
     _ = c.pthread_mutex_lock(&term.lock);
@@ -288,7 +299,10 @@ fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total
     _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, &cvis);
     // The cursor's row counts from the top of the active area, the last
     // `rows` rows; here it is a row of the whole screen, like `top`.
-    cursor.* = .{ .x = cx, .y = @as(i64, @intCast(total)) - term.rows + cy, .visible = cvis };
+    // The program has asked for mouse reports: the page captures the mouse.
+    const mouse = modeOn(term, c.GHOSTTY_MODE_MOUSE_EVENT_X10) or modeOn(term, c.GHOSTTY_MODE_MOUSE_EVENT_NORMAL) or
+        modeOn(term, c.GHOSTTY_MODE_MOUSE_EVENT_BUTTON) or modeOn(term, c.GHOSTTY_MODE_MOUSE_EVENT_ANY);
+    cursor.* = .{ .x = cx, .y = @as(i64, @intCast(total)) - term.rows + cy, .visible = cvis, .mouse = mouse };
     var cols: u16 = 0;
     _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_COLS, &cols);
     out_total.* = @intCast(total);
@@ -381,6 +395,43 @@ fn encodeKey(term: *Term, code: []const u8, text: []const u8, mods: i64) ![]u8 {
     // A key libghostty has nothing to encode for, but which carries text
     // (a character on a layout it does not know), goes as that text.
     if (written == 0 and text.len > 0 and mods & (4 | 8) == 0) return try alloc.dupe(u8, text);
+    return try alloc.dupe(u8, buf[0..written]);
+}
+
+/// A mouse event at a cell of the active area (x, y from its top left), as
+/// the program asked for mouse events: which ones, in which format. Nothing
+/// when it asked for none. `button`: left, middle, right, wheelup,
+/// wheeldown, wheelleft, wheelright; none for a move. Caller frees.
+fn encodeMouse(term: *Term, kind: []const u8, button: []const u8, x: i64, y: i64, mods: i64) ![]u8 {
+    var ev: c.GhosttyMouseEvent = null;
+    if (c.ghostty_mouse_event_new(null, &ev) != c.GHOSTTY_SUCCESS) return error.MouseEvent;
+    defer c.ghostty_mouse_event_free(ev);
+    const action: c.GhosttyMouseAction = if (std.mem.eql(u8, kind, "press")) c.GHOSTTY_MOUSE_ACTION_PRESS else if (std.mem.eql(u8, kind, "release")) c.GHOSTTY_MOUSE_ACTION_RELEASE else c.GHOSTTY_MOUSE_ACTION_MOTION;
+    _ = c.ghostty_mouse_event_set_action(ev, action);
+    const names = [_][]const u8{ "left", "middle", "right", "wheelup", "wheeldown", "wheelleft", "wheelright" };
+    const buttons = [_]c.GhosttyMouseButton{ c.GHOSTTY_MOUSE_BUTTON_LEFT, c.GHOSTTY_MOUSE_BUTTON_MIDDLE, c.GHOSTTY_MOUSE_BUTTON_RIGHT, c.GHOSTTY_MOUSE_BUTTON_FOUR, c.GHOSTTY_MOUSE_BUTTON_FIVE, c.GHOSTTY_MOUSE_BUTTON_SIX, c.GHOSTTY_MOUSE_BUTTON_SEVEN };
+    for (names, buttons) |n, b| if (std.mem.eql(u8, n, button)) {
+        _ = c.ghostty_mouse_event_set_button(ev, b);
+    };
+    var gm: c.GhosttyMods = 0;
+    if (mods & 1 != 0) gm |= c.GHOSTTY_MODS_SHIFT;
+    if (mods & 2 != 0) gm |= c.GHOSTTY_MODS_ALT;
+    if (mods & 4 != 0) gm |= c.GHOSTTY_MODS_CTRL;
+    if (mods & 8 != 0) gm |= c.GHOSTTY_MODS_SUPER;
+    _ = c.ghostty_mouse_event_set_mods(ev, gm);
+    // Cells as pixels one unit square: the middle of cell (x, y).
+    _ = c.ghostty_mouse_event_set_position(ev, .{ .x = @as(f32, @floatFromInt(x)) + 0.5, .y = @as(f32, @floatFromInt(y)) + 0.5 });
+
+    var buf: [128]u8 = undefined;
+    var written: usize = 0;
+    {
+        _ = c.pthread_mutex_lock(&term.lock);
+        defer _ = c.pthread_mutex_unlock(&term.lock);
+        _ = c.ghostty_mouse_encoder_set_from_terminal(term.menc, term.t);
+        var size: c.GhosttyMouseEncoderSize = .{ .size = @sizeOf(c.GhosttyMouseEncoderSize), .screen_width = term.cols, .screen_height = term.rows, .cell_width = 1, .cell_height = 1 };
+        _ = c.ghostty_mouse_encoder_set(term.menc, c.GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+        if (c.ghostty_mouse_encoder_encode(term.menc, ev, &buf, buf.len, &written) != c.GHOSTTY_SUCCESS) return error.MouseEncode;
+    }
     return try alloc.dupe(u8, buf[0..written]);
 }
 
@@ -565,6 +616,37 @@ fn run(id: i64, r: V) void {
         return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
     }
 
+    if (std.mem.eql(u8, name, "ghostty mouse")) {
+        const kind = (if (positional(call, 0)) |p| nuStr(p) else null) orelse return respondError(id, "give press, release or move", s);
+        const button = if (named(call, "button")) |v| nuStr(v) orelse "" else "";
+        const x: i64 = if (named(call, "x")) |v| nuInt(v) orelse 0 else 0;
+        const y: i64 = if (named(call, "y")) |v| nuInt(v) orelse 0 else 0;
+        const mods: i64 = if (named(call, "mods")) |v| nuInt(v) orelse 0 else 0;
+        const bytes = encodeMouse(term, kind, button, x, y, mods) catch |e| return respondError(id, @errorName(e), s);
+        defer alloc.free(bytes);
+        writeAll(term.fd, bytes);
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
+
+    if (std.mem.eql(u8, name, "ghostty focus")) {
+        const on = (if (positional(call, 0)) |p| nuVal(p, "Bool") else null) orelse return respondError(id, "give true or false", s);
+        if (on != .bool) return respondError(id, "give true or false", s);
+        var report = false;
+        {
+            _ = c.pthread_mutex_lock(&term.lock);
+            defer _ = c.pthread_mutex_unlock(&term.lock);
+            report = modeOn(term, c.GHOSTTY_MODE_FOCUS_EVENT);
+        }
+        // Only a program that turned focus reports on (?1004h) is told.
+        if (report) {
+            var buf: [16]u8 = undefined;
+            var written: usize = 0;
+            const ev: c.GhosttyFocusEvent = if (on.bool) c.GHOSTTY_FOCUS_GAINED else c.GHOSTTY_FOCUS_LOST;
+            if (c.ghostty_focus_encode(ev, &buf, buf.len, &written) == c.GHOSTTY_SUCCESS) writeAll(term.fd, buf[0..written]);
+        }
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
+
     if (std.mem.eql(u8, name, "ghostty palette")) {
         const css = paletteCss(term) catch |e| return respondError(id, @errorName(e), s);
         defer alloc.free(css);
@@ -616,6 +698,7 @@ fn run(id: i64, r: V) void {
         std.mem.writeInt(i64, tb[0..8], cursor.x, .little);
         std.mem.writeInt(i64, tb[8..16], cursor.y, .little);
         hasher.update(&tb);
+        hasher.update(if (cursor.mouse) "m" else "-");
         const fp = std.fmt.allocPrint(alloc, "{x:0>16}", .{hasher.final()}) catch @panic("oom");
         defer alloc.free(fp);
         var j: J = .{};
@@ -648,6 +731,8 @@ fn run(id: i64, r: V) void {
         j.raw("},\"span\":");
         spanJ(&j, s);
         j.raw("}}");
+        j.raw(",\"mouse\":");
+        boolV(&j, cursor.mouse, s);
         j.raw(",\"html\":");
         strV(&j, html, s);
         j.raw("},\"span\":");
@@ -731,6 +816,18 @@ const signatures =
     \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
     \\{"sig":{"name":"ghostty resize","description":"Give the terminal a new size; the program is told.","extra_description":"","search_terms":[],
     \\ "required_positional":[{"name":"cols","desc":"columns","shape":"Int"},{"name":"rows","desc":"rows","shape":"Int"}],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty mouse","description":"A mouse event at a cell of the active area, reported the way the program asked for mouse events, or not at all.","extra_description":"","search_terms":[],
+    \\ "required_positional":[{"name":"kind","desc":"press, release or move","shape":"String"}],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
+    \\  {"long":"button","short":null,"arg":"String","required":false,"desc":"left, middle, right, wheelup, wheeldown, wheelleft, wheelright"},
+    \\  {"long":"x","short":null,"arg":"Int","required":false,"desc":"column, from 0"},
+    \\  {"long":"y","short":null,"arg":"Int","required":false,"desc":"row of the active area, from 0"},
+    \\  {"long":"mods","short":null,"arg":"Int","required":false,"desc":"1 shift, 2 alt, 4 ctrl, 8 meta"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty focus","description":"The page gained or lost focus; reported only when the program asked for focus reports.","extra_description":"","search_terms":[],
+    \\ "required_positional":[{"name":"on","desc":"true when focused","shape":"Boolean"}],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
     \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
     \\{"sig":{"name":"ghostty palette","description":"The terminal's colours, as the style block its HTML refers to.","extra_description":"","search_terms":[],

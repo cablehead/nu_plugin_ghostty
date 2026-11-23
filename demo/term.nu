@@ -27,7 +27,7 @@ body { display: flex; flex-direction: column; }
 ghostty-term { flex: 1; margin: 12px; min-height: 0; }
 </style>
 </head><body>
-<ghostty-term src=\"/term\"></ghostty-term>
+<ghostty-term src=\"/term\" cap=\"($env.GHX_CAP? | default '')\"></ghostty-term>
 </body></html>"
 }
 
@@ -52,6 +52,8 @@ def json-resp [] { to json -r | metadata set { merge {'http.response': {headers:
           "text" => { $t | ghostty input $f.s }
           "paste" => { $t | ghostty paste $f.s }
           "resize" => { $t | ghostty resize $f.cols $f.rows }
+          "mouse" => { $t | ghostty mouse $f.kind --button ($f.button? | default "") --x $f.x --y $f.y --mods ($f.mods? | default 0) }
+          "focus" => { $t | ghostty focus $f.on }
           _ => null
         }
       } | ignore
