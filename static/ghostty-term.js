@@ -50,7 +50,10 @@
 // Host API:
 //   park()    put focus on this terminal, so typed keys go to it
 //   follow()  scroll to the live output and stay there
-//   The host carries the class `unstuck` while the user has scrolled away.
+//   The host carries the class `unstuck` while the user has scrolled away,
+//   and shows a button that jumps back to the bottom and follows again. The
+//   element's children, if any, are that button's icon:
+//   <ghostty-term src="/term"><iconify-icon icon="lucide:arrow-down"></iconify-icon></ghostty-term>
 //
 // The page brings Datastar with Rocket and names it in an import map:
 //   <script type=importmap>{"imports": {"datastar": "/datastar-rocket@1.0.4.js"}}</script>
@@ -176,7 +179,11 @@ rocket("ghostty-term", {
     const src = props.src.replace(/\/$/, "");
     const nofit = props.nofit || new URLSearchParams(location.search).has("nofit");
 
+    // The page's children are the jump button's icon. Setup runs again when
+    // the element is moved, by then over its own markup, so keep the first.
+    host.ghxIcon ??= host.innerHTML.trim() || "&darr;";
     host.innerHTML = `<div class="scroll"><div class="spacer"></div><div class="win"></div><div class="cursor" hidden></div></div>
+      <button type="button" class="follow" title="Jump to the bottom and follow the output" aria-label="Jump to the bottom">${host.ghxIcon}</button>
       <textarea class="compose" aria-hidden="true" tabindex="-1" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>`;
     const box = host.querySelector(".scroll");
     const spacer = host.querySelector(".spacer");
@@ -276,7 +283,9 @@ rocket("ghostty-term", {
       if (box.scrollTop !== max) box.scrollTop = max;
       lastWrote = box.scrollTop;
     };
-    defineHostProp("follow", { value: () => { setStick(true); toBottom(); fetchWindow(true); } });
+    const follow = () => { setStick(true); toBottom(); fetchWindow(true); };
+    defineHostProp("follow", { value: follow });
+    host.querySelector(".follow").addEventListener("click", follow);
 
     // ---- asking for rows: one request in flight; a newer need waits for it
     const fetchWindow = async (force) => {

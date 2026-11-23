@@ -16,7 +16,7 @@ The plugin runs each program in a libghostty-vt terminal on the server. The page
 <ghostty-term src="/term"></ghostty-term>
 ```
 
-The element listens for ticks on `{src}/live`, asks `{src}/win` for rows, and posts keys, text, pastes and its size to `{src}/input`. It fits the terminal to its box, follows the live output, and stops following when you scroll up. Hold Shift to select text when the program has taken the mouse.
+The element listens for ticks on `{src}/live`, asks `{src}/win` for rows, and posts keys, text, pastes and its size to `{src}/input`. It fits the terminal to its box, follows the live output, and stops following when you scroll up. A button then shows at its bottom right that jumps back to the bottom; the element's children, an `ICONIFY` icon say, are that button's icon. Hold Shift to select text when the program has taken the mouse.
 
 ## The plugin
 

@@ -84,12 +84,11 @@ def ensure-panes [] {
 
 ensure-panes
 
-# The jump-to-the-bottom arrow, shown on a pane while it isn't following.
-const ARROW_ICON = "lucide:arrow-down"
-let ARROW = ICONIFY $ARROW_ICON {width: "18" height: "18"} | get __html
+# The icon for <ghostty-term>'s jump-to-the-bottom button, as its child.
+let ARROW = ICONIFY "lucide:arrow-down" {width: "18" height: "18"} | get __html
 
 def pane-html [pid: string] {
-  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span><span class=\"status\"><span class=\"tag zoomtag\">[zoom]</span></span></div><div class=\"body\"><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\"></ghostty-term><button type=\"button\" class=\"follow\" title=\"Jump to the bottom and follow the output\" aria-label=\"Jump to the bottom\">($ARROW)</button></div></div>"
+  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span><span class=\"status\"><span class=\"tag zoomtag\">[zoom]</span></span></div><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\">($ARROW)</ghostty-term></div>"
 }
 
 def strip-html [] {

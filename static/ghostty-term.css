@@ -49,6 +49,10 @@ ghostty-term .win > div > div { padding-block: 1px; }
 /* Links: the run's own colour, underlined, the hand over them. */
 ghostty-term .win a[href] { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 
+/* Jump to the bottom: shown while the user has scrolled away from the output. */
+ghostty-term .follow { position: absolute; right: 14px; bottom: 10px; z-index: 2; display: none; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid #444; border-radius: 50%; background: #1a1a1a; color: var(--term-fg); cursor: pointer; box-shadow: 0 2px 8px rgb(0 0 0 / 0.4); }
+ghostty-term.unstuck .follow { display: flex; }
+
 /* The program has ended: the last screen stays, dimmed, with a line saying so. */
 ghostty-term.ended .win { opacity: 0.75; }
 ghostty-term.ended .cursor { display: none; }
