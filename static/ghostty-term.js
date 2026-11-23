@@ -219,6 +219,7 @@ rocket("ghostty-term", {
           st.cols = r.cols; st.total = r.total; st.rows = r.rows;
           st.cursor = r.cursor;
           st.mouse = r.mouse;
+          host.classList.toggle("grabbed", !!r.mouse);
           if (st.stick) {
             place(geo(null), null);
           } else if (performance.now() - lastScroll >= REST || !old) {

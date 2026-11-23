@@ -61,9 +61,11 @@ def json-resp [] { to json -r | metadata set { merge {'http.response': {headers:
     }
     _ => {
       if ($req.path | str starts-with "/static/") {
-        let f = ($STATIC | path join ($req.path | path basename))
+        # /static/<file> and /static/fonts/<file>, nothing above static/
+        let rel = $req.path | str replace '/static/' '' | path split | where {|p| $p != ".." }
+        let f = ($STATIC | path join ...$rel)
         if ($f | path exists) {
-          let ct = if ($f | str ends-with ".js") { "text/javascript" } else if ($f | str ends-with ".css") { "text/css" } else { "application/octet-stream" }
+          let ct = if ($f | str ends-with ".js") { "text/javascript" } else if ($f | str ends-with ".css") { "text/css" } else if ($f | str ends-with ".woff2") { "font/woff2" } else { "application/octet-stream" }
           open --raw $f | metadata set { merge {'http.response': {headers: {content-type: $ct}}} }
         } else { "not found" | metadata set { merge {'http.response': {status: 404}} } }
       } else { "not found" | metadata set { merge {'http.response': {status: 404}} } }

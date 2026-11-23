@@ -1,7 +1,16 @@
 /* <ghostty-term>: a scroll box with a spacer as tall as every row kept, the
    window of rows the page holds placed at its row, and the cursor over it. */
+/* Adwaita Mono Nerd Font, vendored from ptyZZZ, both weights: braille,
+   box-drawing, blocks and icons all at one advance, so a row never depends on
+   the OS fallback font. Its own line height at 14px is 18px, so a run's
+   background fills the whole row, with no stripe between rows. */
+@font-face { font-family: "AdwaitaMonoNerd"; font-weight: normal; font-style: normal; font-display: swap;
+  src: url("fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "AdwaitaMonoNerd"; font-weight: bold; font-style: normal; font-display: swap;
+  src: url("fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2"); }
+
 ghostty-term {
-  --term-font: ui-monospace, "SF Mono", Menlo, monospace;
+  --term-font: "AdwaitaMonoNerd", monospace;
   --term-size: 14px;
   --term-line: 18px;
   --term-fg: #c5c8c6;
@@ -25,4 +34,11 @@ ghostty-term .win > div { white-space: pre; }
 ghostty-term .cursor { position: absolute; background: var(--term-cursor); opacity: 0.6; pointer-events: none; }
 ghostty-term .compose { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
 ghostty-term:focus-within { outline: 1px solid #4b6fa8; }
-ghostty-term.shift .scroll { cursor: text; }
+/* While the program holds the mouse and this terminal has focus, clicks go to
+   the program, not to text selection: the arrow says so. Shift keeps native
+   selection, so it brings the text cursor back. */
+ghostty-term.grabbed:focus-within .scroll { cursor: default; }
+ghostty-term.grabbed.shift:focus-within .scroll { cursor: text; }
+/* A run's background is a hair shorter than the row; 1px of vertical padding
+   (which moves no text) closes the seam between rows. */
+ghostty-term .win > div > div { padding-block: 1px; }
