@@ -5,6 +5,9 @@
 //   $t | ghostty input "ls\r"
 //   $t | ghostty window 0 30 --fp $fp     # {fp, top, total, rows, cols, html} or {unchanged: true}
 //   $t | ghostty changes                  # one record each time the program writes
+//   $t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
+//   $t | ghostty paste "two\nlines"       # bracketed when the program asked
+//   $t | ghostty resize 120 40
 //   $t | ghostty palette                  # the <style> block the HTML's colours refer to
 //   $t | ghostty info
 //
@@ -14,7 +17,9 @@
 // the same lock.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("c.zig");
+const keys = @import("keys.zig");
 
 /// The nushell minor versions whose plugin messages this speaks. The plugin
 /// answers the engine's Hello with the engine's own version when its minor
@@ -132,6 +137,7 @@ const max_subs = 16;
 const Term = struct {
     t: c.GhosttyTerminal,
     fmt: c.GhosttyFormatter,
+    enc: c.GhosttyKeyEncoder = null,
     fd: c_int,
     pid: c.pid_t,
     lock: c.pthread_mutex_t,
@@ -169,6 +175,8 @@ fn reader(term: *Term) void {
         if (n <= 0) break;
         var subs: [max_subs]i64 = undefined;
         var seq: i64 = 0;
+        var total: usize = 0;
+        var rows: u16 = 0;
         {
             _ = c.pthread_mutex_lock(&term.lock);
             defer _ = c.pthread_mutex_unlock(&term.lock);
@@ -176,6 +184,8 @@ fn reader(term: *Term) void {
             term.seq += 1;
             seq = term.seq;
             subs = term.subs;
+            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+            rows = term.rows;
         }
         for (subs, 0..) |sid, i| {
             if (sid == 0) continue;
@@ -184,6 +194,10 @@ fn reader(term: *Term) void {
             const s = term.sub_span[i];
             j.fmt("{{\"Data\":[{d},{{\"List\":{{\"Record\":{{\"val\":{{\"seq\":", .{sid});
             intV(&j, seq, s);
+            j.raw(",\"total\":");
+            intV(&j, @intCast(total), s);
+            j.raw(",\"rows\":");
+            intV(&j, rows, s);
             j.raw("},\"span\":");
             spanJ(&j, s);
             j.raw("}}}]}");
@@ -238,6 +252,7 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
     _ = c.ghostty_terminal_set(term.t, c.GHOSTTY_TERMINAL_OPT_USERDATA, @ptrCast(term));
     _ = c.ghostty_terminal_set(term.t, c.GHOSTTY_TERMINAL_OPT_WRITE_PTY, @ptrCast(@constCast(&onWritePty)));
     if (c.ghostty_formatter_terminal_new(null, &term.fmt, term.t) != c.GHOSTTY_SUCCESS) return error.FormatterFailed;
+    if (c.ghostty_key_encoder_new(null, &term.enc) != c.GHOSTTY_SUCCESS) return error.EncoderFailed;
     var emit: c.GhosttyFormatterFormat = c.GHOSTTY_FORMATTER_FORMAT_HTML;
     _ = c.ghostty_formatter_set(term.fmt, c.GHOSTTY_FORMATTER_OPT_EMIT, &emit);
     var extras: c.GhosttyFormatterExtras = c.GHOSTTY_FORMATTER_EXTRAS_NONE;
@@ -258,11 +273,22 @@ fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) 
 
 /// Rows `top` up to `top + height` of the screen, scrollback included, as
 /// HTML. Caller frees.
-fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total: *i64) ![]u8 {
+const Cursor = struct { x: i64 = 0, y: i64 = 0, visible: bool = false };
+
+fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total: *i64, cursor: *Cursor) ![]u8 {
     _ = c.pthread_mutex_lock(&term.lock);
     defer _ = c.pthread_mutex_unlock(&term.lock);
     var total: usize = 0;
     _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+    var cx: u16 = 0;
+    var cy: u16 = 0;
+    var cvis: bool = true;
+    _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_CURSOR_X, &cx);
+    _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_CURSOR_Y, &cy);
+    _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, &cvis);
+    // The cursor's row counts from the top of the active area, the last
+    // `rows` rows; here it is a row of the whole screen, like `top`.
+    cursor.* = .{ .x = cx, .y = @as(i64, @intCast(total)) - term.rows + cy, .visible = cvis };
     var cols: u16 = 0;
     _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_COLS, &cols);
     out_total.* = @intCast(total);
@@ -288,6 +314,112 @@ fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total
     if (c.ghostty_formatter_format_alloc(term.fmt, null, &buf, &len) != c.GHOSTTY_SUCCESS) return error.Format;
     defer c.ghostty_free(null, buf, len);
     return try alloc.dupe(u8, buf[0..len]);
+}
+
+/// A browser KeyboardEvent.code, such as "ArrowUp", "KeyA" or "Digit1", as
+/// libghostty names it: "ARROW_UP", "A", "DIGIT_1".
+fn keyFromCode(code: []const u8) c.GhosttyKey {
+    var buf: [64]u8 = undefined;
+    var n: usize = 0;
+    var src = code;
+    if (code.len == 4 and std.mem.startsWith(u8, code, "Key")) src = code[3..];
+    for (src, 0..) |ch, i| {
+        if (n + 2 > buf.len) return c.GHOSTTY_KEY_UNIDENTIFIED;
+        const prev: u8 = if (i > 0) src[i - 1] else 0;
+        const upper = std.ascii.isUpper(ch);
+        const digit = std.ascii.isDigit(ch);
+        if (i > 0 and ((upper and (std.ascii.isLower(prev) or std.ascii.isDigit(prev))) or (digit and std.ascii.isLower(prev)))) {
+            buf[n] = '_';
+            n += 1;
+        }
+        buf[n] = std.ascii.toUpper(ch);
+        n += 1;
+    }
+    for (keys.all) |k| if (std.mem.eql(u8, k.name, buf[0..n])) return k.key;
+    return c.GHOSTTY_KEY_UNIDENTIFIED;
+}
+
+/// A key as the program asked to be sent keys: application cursor keys,
+/// the kitty protocol, and so on, read from the terminal at each press.
+/// `mods` is the browser's: 1 shift, 2 alt, 4 ctrl, 8 meta. Caller frees.
+fn encodeKey(term: *Term, code: []const u8, text: []const u8, mods: i64) ![]u8 {
+    const key = keyFromCode(code);
+    var gm: c.GhosttyMods = 0;
+    if (mods & 1 != 0) gm |= c.GHOSTTY_MODS_SHIFT;
+    if (mods & 2 != 0) gm |= c.GHOSTTY_MODS_ALT;
+    if (mods & 4 != 0) gm |= c.GHOSTTY_MODS_CTRL;
+    if (mods & 8 != 0) gm |= c.GHOSTTY_MODS_SUPER;
+
+    var ev: c.GhosttyKeyEvent = null;
+    if (c.ghostty_key_event_new(null, &ev) != c.GHOSTTY_SUCCESS) return error.KeyEvent;
+    defer c.ghostty_key_event_free(ev);
+    _ = c.ghostty_key_event_set_action(ev, c.GHOSTTY_KEY_ACTION_PRESS);
+    _ = c.ghostty_key_event_set_key(ev, key);
+    _ = c.ghostty_key_event_set_mods(ev, gm);
+    // The character the key makes without shift: what ctrl and alt combine with.
+    var unshifted: u32 = 0;
+    if (code.len == 4 and std.mem.startsWith(u8, code, "Key")) unshifted = std.ascii.toLower(code[3]);
+    if (code.len == 6 and std.mem.startsWith(u8, code, "Digit")) unshifted = code[5];
+    if (unshifted == 0 and text.len == 1 and mods & 1 == 0) unshifted = text[0];
+    if (unshifted != 0) _ = c.ghostty_key_event_set_unshifted_codepoint(ev, unshifted);
+    if (text.len > 0) _ = c.ghostty_key_event_set_utf8(ev, .{ .ptr = text.ptr, .len = text.len });
+
+    var buf: [128]u8 = undefined;
+    var written: usize = 0;
+    {
+        _ = c.pthread_mutex_lock(&term.lock);
+        defer _ = c.pthread_mutex_unlock(&term.lock);
+        _ = c.ghostty_key_encoder_set_from_terminal(term.enc, term.t);
+        // The browser reports Option as alt, and means it as alt: the page
+        // already let Option make its own characters (a composed glyph
+        // arrives as --text with no alt bit). Re-set at each press, since
+        // reading the terminal's modes may reset it.
+        var opt: c.GhosttyOptionAsAlt = c.GHOSTTY_OPTION_AS_ALT_TRUE;
+        _ = c.ghostty_key_encoder_set(term.enc, c.GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &opt);
+        if (c.ghostty_key_encoder_encode(term.enc, ev, &buf, buf.len, &written) != c.GHOSTTY_SUCCESS) return error.KeyEncode;
+    }
+    // A key libghostty has nothing to encode for, but which carries text
+    // (a character on a layout it does not know), goes as that text.
+    if (written == 0 and text.len > 0 and mods & (4 | 8) == 0) return try alloc.dupe(u8, text);
+    return try alloc.dupe(u8, buf[0..written]);
+}
+
+/// Pasted text, bracketed when the program turned bracketed paste on, and
+/// stripped of control bytes either way. Caller frees.
+fn encodePaste(term: *Term, text: []const u8) ![]u8 {
+    var mode: c.GhosttyTerminalModeConfig = .{ .mode = c.GHOSTTY_MODE_BRACKETED_PASTE, .value = false };
+    {
+        _ = c.pthread_mutex_lock(&term.lock);
+        defer _ = c.pthread_mutex_unlock(&term.lock);
+        _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_MODE, &mode);
+    }
+    const data = try alloc.dupe(u8, text);
+    defer alloc.free(data);
+    var needed: usize = 0;
+    _ = c.ghostty_paste_encode(data.ptr, data.len, mode.value, null, 0, &needed);
+    const out = try alloc.alloc(u8, needed);
+    var written: usize = 0;
+    if (c.ghostty_paste_encode(data.ptr, data.len, mode.value, out.ptr, out.len, &written) != c.GHOSTTY_SUCCESS) {
+        alloc.free(out);
+        return error.PasteEncode;
+    }
+    return out[0..written];
+}
+
+/// New size for the terminal and the program: libghostty reflows, and the
+/// pty tells the program, which redraws.
+fn resizeTerm(term: *Term, cols: u16, rows: u16) void {
+    {
+        _ = c.pthread_mutex_lock(&term.lock);
+        defer _ = c.pthread_mutex_unlock(&term.lock);
+        _ = c.ghostty_terminal_resize(term.t, cols, rows, 0, 0);
+        term.cols = cols;
+        term.rows = rows;
+    }
+    var ws: c.struct_winsize = .{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+    // TIOCSWINSZ is a macro translate-c cannot carry.
+    const tiocswinsz: c_ulong = if (builtin.os.tag == .macos) 0x80087467 else 0x5414;
+    _ = c.ioctl(term.fd, tiocswinsz, &ws);
 }
 
 /// The terminal's colours as the `<style>` block the HTML's
@@ -408,6 +540,31 @@ fn run(id: i64, r: V) void {
         return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
     }
 
+    if (std.mem.eql(u8, name, "ghostty key")) {
+        const code = (if (positional(call, 0)) |p| nuStr(p) else null) orelse return respondError(id, "give the key's KeyboardEvent.code, such as ArrowUp or KeyA", s);
+        const text = if (named(call, "text")) |v| nuStr(v) orelse "" else "";
+        const mods: i64 = if (named(call, "mods")) |v| nuInt(v) orelse 0 else 0;
+        const bytes = encodeKey(term, code, text, mods) catch |e| return respondError(id, @errorName(e), s);
+        defer alloc.free(bytes);
+        writeAll(term.fd, bytes);
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
+
+    if (std.mem.eql(u8, name, "ghostty paste")) {
+        const text = (if (positional(call, 0)) |p| nuStr(p) else null) orelse return respondError(id, "give the text to paste", s);
+        const bytes = encodePaste(term, text) catch |e| return respondError(id, @errorName(e), s);
+        defer alloc.free(bytes);
+        writeAll(term.fd, bytes);
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
+
+    if (std.mem.eql(u8, name, "ghostty resize")) {
+        const cols = (if (positional(call, 0)) |p| nuInt(p) else null) orelse return respondError(id, "give the columns", s);
+        const rows = (if (positional(call, 1)) |p| nuInt(p) else null) orelse return respondError(id, "give the rows", s);
+        resizeTerm(term, @intCast(std.math.clamp(cols, 2, 1000)), @intCast(std.math.clamp(rows, 2, 500)));
+        return respondValue(id, "{\"Nothing\":{\"span\":{\"start\":0,\"end\":0}}}");
+    }
+
     if (std.mem.eql(u8, name, "ghostty palette")) {
         const css = paletteCss(term) catch |e| return respondError(id, @errorName(e), s);
         defer alloc.free(css);
@@ -447,13 +604,17 @@ fn run(id: i64, r: V) void {
         const height = (if (positional(call, 1)) |p| nuInt(p) else null) orelse return respondError(id, "give the height", s);
         var out_top: i64 = 0;
         var total: i64 = 0;
-        const html = windowHtml(term, top, height, &out_top, &total) catch |e| return respondError(id, @errorName(e), s);
+        var cursor: Cursor = .{};
+        const html = windowHtml(term, top, height, &out_top, &total, &cursor) catch |e| return respondError(id, @errorName(e), s);
         defer alloc.free(html);
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(html);
         var tb: [16]u8 = undefined;
         std.mem.writeInt(i64, tb[0..8], out_top, .little);
         std.mem.writeInt(i64, tb[8..16], total, .little);
+        hasher.update(&tb);
+        std.mem.writeInt(i64, tb[0..8], cursor.x, .little);
+        std.mem.writeInt(i64, tb[8..16], cursor.y, .little);
         hasher.update(&tb);
         const fp = std.fmt.allocPrint(alloc, "{x:0>16}", .{hasher.final()}) catch @panic("oom");
         defer alloc.free(fp);
@@ -478,6 +639,15 @@ fn run(id: i64, r: V) void {
         intV(&j, term.rows, s);
         j.raw(",\"cols\":");
         intV(&j, term.cols, s);
+        j.raw(",\"cursor\":{\"Record\":{\"val\":{\"x\":");
+        intV(&j, cursor.x, s);
+        j.raw(",\"y\":");
+        intV(&j, cursor.y, s);
+        j.raw(",\"visible\":");
+        boolV(&j, cursor.visible, s);
+        j.raw("},\"span\":");
+        spanJ(&j, s);
+        j.raw("}}");
         j.raw(",\"html\":");
         strV(&j, html, s);
         j.raw("},\"span\":");
@@ -549,6 +719,20 @@ const signatures =
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
     \\ "input_output_types":[["Int",{"List":{"Record":[]}}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty key","description":"Press a key, named as a browser's KeyboardEvent.code. libghostty encodes it the way the program asked keys to be sent.","extra_description":"--mods is the browser's: 1 shift, 2 alt, 4 ctrl, 8 meta. --text is the KeyboardEvent.key the key made, when it made a character.","search_terms":[],
+    \\ "required_positional":[{"name":"code","desc":"such as ArrowUp, KeyA, Enter","shape":"String"}],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
+    \\  {"long":"text","short":null,"arg":"String","required":false,"desc":"the character the key made"},
+    \\  {"long":"mods","short":null,"arg":"Int","required":false,"desc":"1 shift, 2 alt, 4 ctrl, 8 meta"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty paste","description":"Paste text, bracketed when the program asked for bracketed paste.","extra_description":"","search_terms":[],
+    \\ "required_positional":[{"name":"text","desc":"the text","shape":"String"}],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
+    \\{"sig":{"name":"ghostty resize","description":"Give the terminal a new size; the program is told.","extra_description":"","search_terms":[],
+    \\ "required_positional":[{"name":"cols","desc":"columns","shape":"Int"},{"name":"rows","desc":"rows","shape":"Int"}],"optional_positional":[],"rest_positional":null,
+    \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
+    \\ "input_output_types":[["Int","Nothing"]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
     \\{"sig":{"name":"ghostty palette","description":"The terminal's colours, as the style block its HTML refers to.","extra_description":"","search_terms":[],
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],

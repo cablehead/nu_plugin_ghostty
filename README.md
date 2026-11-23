@@ -12,8 +12,25 @@ $t | ghostty input "ls\r"
 $t | ghostty window 1200 30            # {fp, top, total, rows, cols, html}
 $t | ghostty window 1200 30 --fp $fp   # {unchanged: true} when it is
 $t | ghostty changes                   # a stream, one {seq} each time the program writes
+$t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
+$t | ghostty paste "two\nlines"        # bracketed when the program asked
+$t | ghostty resize 120 40
 $t | ghostty palette                   # the <style> block the HTML's colours refer to
 $t | ghostty info                      # {total, rows, cols, seq, alive}
+```
+
+`static/ghostty-term.js` is `<ghostty-term src="/term">`, a Datastar Rocket
+element modelled on ptyZZZ's `<pty-term>`: keys, composed text and paste go to
+`{src}/input`, it fits the terminal to its box, and it follows the live output
+until you scroll away. It holds the rows in view plus a screenful either side
+and asks `{src}/win` for the rows at its scroll position. Only the last `rows`
+rows of a terminal can change, so while you are scrolled back into history it
+asks for nothing; the `{src}/live` ticks only lengthen the scrollbar.
+
+`demo/term.nu` serves one terminal with it:
+
+```sh
+http-nu --datastar-rocket --plugin ./nu_plugin_ghostty 127.0.0.1:3012 demo/term.nu
 ```
 
 Row 0 is the oldest line kept. `--scrollback` sets how many lines are kept,
@@ -25,6 +42,6 @@ Row 0 is the oldest line kept. `--scrollback` sets how many lines are kept,
 http-nu --datastar --plugin ./nu_plugin_ghostty 127.0.0.1:3011 demo/serve.nu
 ```
 
-Build with `./build.sh`; it needs Zig 0.17.1 and the libghostty-vt 1.0.1
+Build with `./build.sh`; `./gen-keys.sh` regenerates `keys.zig` for a new libghostty-vt. It needs Zig 0.17.1 and the libghostty-vt 1.0.1
 XCFramework, so it builds on macOS only for now. The plugin answers nushell
 0.116 and 0.117.

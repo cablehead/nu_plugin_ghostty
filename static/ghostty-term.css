@@ -1,0 +1,27 @@
+/* <ghostty-term>: a scroll box with a spacer as tall as every row kept, the
+   window of rows the page holds placed at its row, and the cursor over it. */
+ghostty-term {
+  --term-font: ui-monospace, "SF Mono", Menlo, monospace;
+  --term-size: 14px;
+  --term-line: 18px;
+  --term-fg: #c5c8c6;
+  --term-bg: #1d1f21;
+  --term-cursor: #c5c8c6;
+  display: block;
+  position: relative;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  overflow: hidden;
+}
+ghostty-term .scroll { position: relative; height: 100%; overflow-y: auto; overflow-x: hidden; overflow-anchor: none; }
+ghostty-term .spacer { width: 1px; }
+ghostty-term .win { position: absolute; left: 0; right: 0; top: 0; }
+ghostty-term .win, ghostty-term .win > div {
+  font-family: var(--term-font) !important;
+  font-size: var(--term-size);
+  line-height: var(--term-line);
+}
+ghostty-term .win > div { white-space: pre; }
+ghostty-term .cursor { position: absolute; background: var(--term-cursor); opacity: 0.6; pointer-events: none; }
+ghostty-term .compose { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+ghostty-term:focus-within { outline: 1px solid #4b6fa8; }
