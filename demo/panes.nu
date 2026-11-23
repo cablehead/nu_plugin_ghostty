@@ -24,6 +24,7 @@
 # the selected column into view.
 
 use http-nu/datastar *
+use http-nu/html *
 
 const STATIC = path self ../static
 const PAGE_JS = path self panes.js
@@ -83,8 +84,12 @@ def ensure-panes [] {
 
 ensure-panes
 
+# The jump-to-the-bottom arrow, shown on a pane while it isn't following.
+const ARROW_ICON = "lucide:arrow-down"
+let ARROW = ICONIFY $ARROW_ICON {width: "18" height: "18"} | get __html
+
 def pane-html [pid: string] {
-  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span><span class=\"status\"><span class=\"tag zoomtag\">[zoom]</span><button type=\"button\" class=\"follow\" title=\"Scroll to the live output and follow it\"></button></span></div><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\"></ghostty-term></div>"
+  $"<div class=\"pane\" id=\"pane-($pid)\" data-pane=\"($pid)\"><div class=\"label\"><span class=\"name\">($pid)</span><span class=\"status\"><span class=\"tag zoomtag\">[zoom]</span></span></div><div class=\"body\"><ghostty-term src=\"/t/($pid)\" pane=\"($pid)\"></ghostty-term><button type=\"button\" class=\"follow\" title=\"Jump to the bottom and follow the output\" aria-label=\"Jump to the bottom\">($ARROW)</button></div></div>"
 }
 
 def strip-html [] {
@@ -109,6 +114,7 @@ def page [palette: string] {
 <html><head><meta charset=utf-8><title>ghostty-term panes</title>
 ($palette)
 <link rel=stylesheet href=\"/static/ghostty-term.css\">
+(SCRIPT-ICONIFY | get __html)
 <link rel=stylesheet href=\"/panes.css\">
 <script type=importmap>($imports)</script>
 <script type=module src=\"($DATASTAR_ROCKET_JS_PATH)\"></script>

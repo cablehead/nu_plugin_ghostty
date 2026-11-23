@@ -18,15 +18,16 @@ body{background:#000;color:var(--fg);font:14px/1.2 system-ui,sans-serif;overflow
 .pane + .pane{border-top:1px solid var(--border)}
 .pane.selected .label{color:#fff;background:#333}
 .label{flex:none;font-size:11px;color:var(--dim);background:var(--chrome);padding:2px 8px;display:flex;align-items:center;gap:8px}
-.pane ghostty-term{flex:1;min-height:0;margin:0}
+.pane ghostty-term{flex:1;min-height:0;min-width:0;margin:0}
 .status{margin-left:auto;display:flex;align-items:center;gap:8px}
 .status > *{visibility:hidden}
-.follow{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--sel);line-height:1}
-.pane:has(ghostty-term.unstuck) .follow{visibility:visible}
+.pane .body{flex:1;min-height:0;display:flex;position:relative}
+/* The jump to the bottom: on the terminal, bottom right, while it isn't following. */
+.follow{position:absolute;right:14px;bottom:10px;z-index:2;display:none;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:1px solid var(--border);border-radius:50%;background:var(--chrome);color:var(--fg);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.pane:has(ghostty-term.unstuck) .follow{display:flex}
 .tag{letter-spacing:0.04em}
 body.zoom .pane.selected .zoomtag{visibility:visible}
-.follow::after{content:"";display:block;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid currentColor}
-.follow:hover{color:var(--fg)}
+.follow:hover{background:var(--sel);color:#fff}
 
 /* Zoom: the selected pane fills the strip. The others are hidden in place,
    so their terminals keep following behind the zoom. */
