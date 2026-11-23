@@ -1,0 +1,10 @@
+#include <ghostty/vt.h>
+#include <util.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/ioctl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>

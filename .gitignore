@@ -1,0 +1,5 @@
+c.zig
+nu_plugin_ghostty
+nu_plugin_ghostty.o
+*.msgpackz
+.zig-cache/
