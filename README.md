@@ -1,6 +1,6 @@
 # nu_plugin_ghostty
 
-Real terminals in a web page, served from Nushell. `<ghostty-term>` is a [Datastar Rocket](https://data-star.dev) web component that draws a terminal and sends your keys to it. Behind it, this Nushell plugin runs the program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and hands the page the rows it's scrolled to, as HTML, scrollback included.
+Ghostty in a web page, as plain HTML. There's no terminal emulator in the browser: no xterm.js, no ghostty-web. The terminal lives on the server. This Nushell plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and projects its screen as plain HTML: the rows the page is scrolled to, scrollback included, colours and all. In the browser, `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, shows those rows and sends your keys back.
 
 In the page, a terminal is one tag:
 
