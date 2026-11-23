@@ -406,6 +406,7 @@ fn windowHtml(term: *Term, top_in: i64, height_in: i64, out_top: *i64, out_total
     var buf: [*c]u8 = null;
     var len: usize = 0;
     if (c.ghostty_formatter_format_alloc(term.fmt, null, &buf, &len) != c.GHOSTTY_SUCCESS) return error.Format;
+    if (buf == null or len == 0) return try alloc.dupe(u8, "");
     defer c.ghostty_free(null, buf, len);
     try findLinks(term, top, last, t_total, cols, links);
     return try alloc.dupe(u8, buf[0..len]);
@@ -534,6 +535,9 @@ fn findLinks(term: *Term, top: i64, last: i64, total: i64, cols: u16, links: *st
     var buf: [*c]u8 = null;
     var len: usize = 0;
     if (c.ghostty_formatter_format_alloc(term.pfmt, null, &buf, &len) != c.GHOSTTY_SUCCESS) return;
+    // An empty screen (a program that has printed nothing yet) comes back as
+    // no buffer at all: nothing to find, and nothing to free.
+    if (buf == null or len == 0) return;
     defer c.ghostty_free(null, buf, len);
 
     // the rows' text, one line per row (blank rows at the end are left out)
@@ -750,6 +754,7 @@ fn paletteCss(term: *Term) ![]u8 {
     var buf: [*c]u8 = null;
     var len: usize = 0;
     if (c.ghostty_formatter_format_alloc(f, null, &buf, &len) != c.GHOSTTY_SUCCESS) return error.Format;
+    if (buf == null or len == 0) return try alloc.dupe(u8, "");
     defer c.ghostty_free(null, buf, len);
     const html = buf[0..len];
     const end = std.mem.indexOf(u8, html, "</style>") orelse return try alloc.dupe(u8, "");

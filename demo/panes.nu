@@ -103,12 +103,12 @@ body { display: flex; flex-direction: column; }
 #bar .mode { color: #c5c8c6; }
 #strip { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 0 8px 8px; overflow-x: auto; }
 .column { flex: 1 0 min\(100ch, 100%\); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 2px solid #2c2f33; border-radius: 6px; }
-.pane.selected { border-color: #5f819d; }
-body.focus .pane.selected { border-color: #8abeb7; }
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane .label { padding: 2px 8px; color: #8a8f98; }
-.pane ghostty-term { flex: 1; min-height: 0; margin: 4px 8px 8px; }
-.pane ghostty-term:focus-within { outline: none; }
+/* Typing into a pane shows as <ghostty-term>'s own focus outline. In
+   navigate mode nothing has focus, so the selected pane's name is marked. */
+.pane.selected .label { color: #c5c8c6; background: #2c2f33; border-radius: 4px 4px 0 0; }
+.pane ghostty-term { flex: 1; min-height: 0; margin: 0 8px 8px; }
 #panel { position: fixed; bottom: 12px; right: 12px; padding: 8px 12px; background: #2c2f33; border-radius: 6px; }
 </style>
 </head><body>
