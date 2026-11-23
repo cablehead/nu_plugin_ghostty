@@ -71,3 +71,7 @@ plugin add ./nu_plugin_ghostty
 ```
 
 The build script is for macOS only for now.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
