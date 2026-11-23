@@ -8,8 +8,9 @@
 //   <ghostty-term src="/term"></ghostty-term>
 //
 // The server under `src` answers:
-//   GET  {src}/live            SSE, event "tick": {seq, total, rows} each time
-//                              the program writes
+//   GET  {src}/live            SSE, event "tick": {seq, total, rows, alive}
+//                              each time the program writes, and a last one
+//                              with alive false and its exit code when it ends
 //   GET  {src}/win?top&h&fp    the rows top..top+h as {fp, top, total, rows,
 //                              cols, cursor, html}, or {unchanged: true}
 //   POST {src}/input           NDJSON frames: {t:"key", code, key, mods},
@@ -320,15 +321,34 @@ rocket("ghostty-term", {
     live.addEventListener("tick", (ev) => {
       const t = JSON.parse(ev.data);
       setTotal(t.total, t.rows);
+      if (t.alive === false) return ended(t.code);
       // Scrolled back into history, nothing in view can have changed.
       if (st.stick || showsActive()) fetchWindow(false);
     });
     cleanup(() => live.close());
 
+    // ---- the program ended: as pty-term does, say so and stop. The stream
+    // is closed here, or the browser would open it again every few seconds.
+    // The last screen stays, to read and copy; keys go nowhere.
+    let over = false;
+    const ended = (code) => {
+      if (over) return;
+      over = true;
+      live.close();
+      host.classList.add("ended");
+      host.dataset.exit = String(code ?? "");
+      const note = document.createElement("div");
+      note.className = "ended-note";
+      note.textContent = code ? `The program ended, with exit code ${code}.` : "The program ended.";
+      host.append(note);
+      fetchWindow(true);
+    };
+    defineHostProp("ended", { get: () => over });
+
     // ---- input: an awaited queue, so frames reach the terminal in order
     const queue = [];
     let sending = false;
-    const send = (frame) => { queue.push(JSON.stringify(frame)); drain(); };
+    const send = (frame) => { if (over) return; queue.push(JSON.stringify(frame)); drain(); };
     const drain = async () => {
       if (sending) return;
       sending = true;

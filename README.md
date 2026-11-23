@@ -11,14 +11,14 @@ let t = ghostty spawn [bash -l] --cols 100 --rows 30
 $t | ghostty input "ls\r"
 $t | ghostty window 1200 30            # {fp, top, total, rows, cols, links, html}
 $t | ghostty window 1200 30 --fp $fp   # {unchanged: true} when it is
-$t | ghostty changes                   # a stream, one {seq} each time the program writes
+$t | ghostty changes                   # a stream, one {seq, alive} each time the program writes, a last one with its exit code
 $t | ghostty key ArrowUp --mods 4      # a browser key, encoded as the program asked
 $t | ghostty paste "two\nlines"        # bracketed when the program asked
 $t | ghostty resize 120 40
 $t | ghostty mouse press --button left --x 4 --y 2   # reported when the program asked
 $t | ghostty focus true                # reported when the program asked
 $t | ghostty palette                   # the <style> block the HTML's colours refer to
-$t | ghostty info                      # {total, rows, cols, seq, alive}
+$t | ghostty info                      # {total, rows, cols, seq, alive}, and code once it has ended
 ```
 
 `static/ghostty-term.js` is `<ghostty-term src="/term">`, a Datastar Rocket

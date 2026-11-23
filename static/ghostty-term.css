@@ -44,3 +44,9 @@ ghostty-term.grabbed.shift:focus-within .scroll { cursor: text; }
 ghostty-term .win > div > div { padding-block: 1px; }
 /* Links: the run's own colour, underlined, the hand over them. */
 ghostty-term .win a[href] { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* The program has ended: the last screen stays, dimmed, with a line saying so. */
+ghostty-term.ended .win { opacity: 0.75; }
+ghostty-term.ended .cursor { display: none; }
+ghostty-term .ended-note { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 10px; font: 13px system-ui, sans-serif; color: #fff; background: rgb(0 0 0 / 0.7); pointer-events: none; }
+

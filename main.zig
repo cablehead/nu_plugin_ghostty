@@ -148,6 +148,9 @@ const Term = struct {
     lock: c.pthread_mutex_t,
     seq: i64 = 0,
     alive: bool = true,
+    /// the program's exit code once it has ended: its own, or 128 plus the
+    /// signal that ended it, as a shell reports it
+    code: i64 = 0,
     cols: u16,
     rows: u16,
     /// stream ids of open `ghostty changes`, 0 when free
@@ -203,29 +206,65 @@ fn reader(term: *Term) void {
             intV(&j, @intCast(total), s);
             j.raw(",\"rows\":");
             intV(&j, rows, s);
+            j.raw(",\"alive\":");
+            boolV(&j, true, s);
             j.raw("},\"span\":");
             spanJ(&j, s);
             j.raw("}}}]}");
             send(j.buf.items);
         }
     }
+    // The program has ended: its code, then one last record saying so on each
+    // open stream, then the end of the stream.
+    var status: c_int = 0;
+    _ = c.waitpid(term.pid, &status, 0);
+    const code: i64 = if (status & 0x7f == 0) (status >> 8) & 0xff else 128 + (status & 0x7f);
     var subs: [max_subs]i64 = undefined;
+    var spans: [max_subs]Span = undefined;
+    var seq: i64 = 0;
+    var total: usize = 0;
     {
         _ = c.pthread_mutex_lock(&term.lock);
         defer _ = c.pthread_mutex_unlock(&term.lock);
         term.alive = false;
+        term.code = code;
+        seq = term.seq;
+        _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
         subs = term.subs;
+        spans = term.sub_span;
         term.subs = @splat(0);
     }
-    for (subs) |sid| {
+    for (subs, 0..) |sid, i| {
         if (sid == 0) continue;
         var j: J = .{};
         defer j.deinit();
-        j.fmt("{{\"End\":{d}}}", .{sid});
+        j.fmt("{{\"Data\":[{d},{{\"List\":", .{sid});
+        endedRecord(&j, term, seq, total, code, spans[i]);
+        j.raw("}]}");
         send(j.buf.items);
+        var e: J = .{};
+        defer e.deinit();
+        e.fmt("{{\"End\":{d}}}", .{sid});
+        send(e.buf.items);
     }
-    var status: c_int = 0;
-    _ = c.waitpid(term.pid, &status, 0);
+}
+
+/// {seq, total, rows, alive: false, code}: the last word on a terminal whose
+/// program has ended.
+fn endedRecord(j: *J, term: *Term, seq: i64, total: usize, code: i64, s: Span) void {
+    j.raw("{\"Record\":{\"val\":{\"seq\":");
+    intV(j, seq, s);
+    j.raw(",\"total\":");
+    intV(j, @intCast(total), s);
+    j.raw(",\"rows\":");
+    intV(j, term.rows, s);
+    j.raw(",\"alive\":");
+    boolV(j, false, s);
+    j.raw(",\"code\":");
+    intV(j, code, s);
+    j.raw("},\"span\":");
+    spanJ(j, s);
+    j.raw("}}");
 }
 
 fn spawnTerm(argv: []const []const u8, cols: u16, rows: u16, scrollback: usize) !i64 {
@@ -860,6 +899,10 @@ fn run(id: i64, r: V) void {
         intV(&j, seq, s);
         j.raw(",\"alive\":");
         boolV(&j, alive, s);
+        if (!alive) {
+            j.raw(",\"code\":");
+            intV(&j, term.code, s);
+        }
         j.raw("},\"span\":");
         spanJ(&j, s);
         j.raw("}}");
@@ -961,7 +1004,19 @@ fn run(id: i64, r: V) void {
     if (std.mem.eql(u8, name, "ghostty changes")) {
         _ = c.pthread_mutex_lock(&term.lock);
         defer _ = c.pthread_mutex_unlock(&term.lock);
-        if (!term.alive) return respondError(id, "the program has exited", s);
+        if (!term.alive) {
+            // Asked after the end: a list holding the one record that says so.
+            var total: usize = 0;
+            _ = c.ghostty_terminal_get(term.t, c.GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+            var j: J = .{};
+            defer j.deinit();
+            j.raw("{\"List\":{\"vals\":[");
+            endedRecord(&j, term, term.seq, total, term.code, s);
+            j.raw("],\"span\":");
+            spanJ(&j, s);
+            j.raw("}}");
+            return respondValue(id, j.buf.items);
+        }
         for (&term.subs, 0..) |*slot, i| {
             if (slot.* != 0) continue;
             const sid = @atomicRmw(i64, &next_stream, .Add, 1, .seq_cst);
@@ -1017,7 +1072,7 @@ const signatures =
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"},
     \\  {"long":"fp","short":null,"arg":"String","required":false,"desc":"the fp of the window you have"}],
     \\ "input_output_types":[["Int",{"Record":[]}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
-    \\{"sig":{"name":"ghostty changes","description":"A stream with one record each time the program writes, until it exits.","extra_description":"","search_terms":[],
+    \\{"sig":{"name":"ghostty changes","description":"A stream with one record each time the program writes ({seq, total, rows, alive: true}), and a last one when it ends ({alive: false, code}).","extra_description":"","search_terms":[],
     \\ "required_positional":[],"optional_positional":[],"rest_positional":null,
     \\ "named":[{"long":"help","short":"h","arg":null,"required":false,"desc":"Display the help message for this command"}],
     \\ "input_output_types":[["Int",{"List":{"Record":[]}}]],"allow_variants_without_examples":true,"is_filter":false,"creates_scope":false,"allows_unknown_args":false,"category":"Experimental"},"examples":[]},
