@@ -108,6 +108,7 @@ body { display: flex; flex-direction: column; }
 body.focus .pane.selected { border-color: #8abeb7; }
 .pane .label { padding: 2px 8px; color: #8a8f98; }
 .pane ghostty-term { flex: 1; min-height: 0; margin: 4px 8px 8px; }
+.pane ghostty-term:focus-within { outline: none; }
 #panel { position: fixed; bottom: 12px; right: 12px; padding: 8px 12px; background: #2c2f33; border-radius: 6px; }
 </style>
 </head><body>

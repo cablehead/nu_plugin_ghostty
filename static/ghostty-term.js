@@ -166,6 +166,13 @@ rocket("ghostty-term", {
     cap: string.trim,
   }),
   setup: ({ host, props, cleanup, defineHostProp }) => {
+    // Listeners on the host outlive this setup: the element runs setup again
+    // each time it is put back in the page (a layout that moves a pane), and
+    // without this every key would be sent once per move (n2 #6633). Its
+    // inner parts are drawn afresh below, so theirs go with them.
+    const ac = new AbortController();
+    cleanup(() => ac.abort());
+    const on = (type, fn, opts) => host.addEventListener(type, fn, { ...(opts === true ? { capture: true } : opts), signal: ac.signal });
     const src = props.src.replace(/\/$/, "");
     const nofit = props.nofit || new URLSearchParams(location.search).has("nofit");
 
@@ -320,8 +327,8 @@ rocket("ghostty-term", {
       cursorEl.style.width = (cell?.w || 8) + "px";
       cursorEl.style.height = rowH() + "px";
     };
-    host.addEventListener("focusin", drawCursor);
-    host.addEventListener("focusout", () => setTimeout(drawCursor));
+    on("focusin", drawCursor);
+    on("focusout", () => setTimeout(drawCursor));
 
     box.addEventListener("scroll", () => {
       if (box.scrollTop !== lastWrote) {
@@ -386,7 +393,7 @@ rocket("ghostty-term", {
       try { ta.focus({ preventScroll: true }); } catch {}
     });
     defineHostProp("park", { value: park });
-    host.addEventListener("click", () => {
+    on("click", () => {
       const sel = getSelection();
       if (sel && !sel.isCollapsed) return;
       ta.focus({ preventScroll: true });
@@ -400,7 +407,7 @@ rocket("ghostty-term", {
       ta.value = "";
       if (data) send({ t: "text", s: data });
     });
-    host.addEventListener("keydown", (ev) => {
+    on("keydown", (ev) => {
       if (ev.isComposing || ev.keyCode === 229 || composing) return;
       if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "c") {
         const sel = getSelection().toString();
@@ -415,7 +422,7 @@ rocket("ghostty-term", {
       if (!st.stick) { setStick(true); toBottom(); }
       send(frame);
     });
-    host.addEventListener("paste", (ev) => {
+    on("paste", (ev) => {
       const text = ev.clipboardData?.getData("text");
       if (!text) return;
       ev.preventDefault();
@@ -425,9 +432,9 @@ rocket("ghostty-term", {
     // ---- focus reports: only a real change, and a press waits for its click
     let focused = null, pressing = false;
     const sendFocus = (on) => { if (on === focused) return; focused = on; send({ t: "focus", on }); };
-    host.addEventListener("focusin", () => sendFocus(true));
-    host.addEventListener("focusout", (ev) => { if (!pressing && !host.contains(ev.relatedTarget)) sendFocus(false); });
-    host.addEventListener("pointerdown", () => { pressing = true; }, true);
+    on("focusin", () => sendFocus(true));
+    on("focusout", (ev) => { if (!pressing && !host.contains(ev.relatedTarget)) sendFocus(false); });
+    on("pointerdown", () => { pressing = true; }, true);
     const settle = () => {
       if (!pressing) return;
       pressing = false;
