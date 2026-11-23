@@ -1,6 +1,6 @@
 # nu_plugin_ghostty
 
-nu_plugin_ghostty keeps terminals on the server and sends the browser plain HTML of them. The browser runs no terminal emulator: no xterm.js, no ghostty-web. The plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library, and turns the rows the page is scrolled to into HTML, scrollback and colours included. `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, shows those rows in the page and sends your keys back.
+nu_plugin_ghostty keeps terminals on the server and sends the browser plain HTML of them. The browser runs no terminal emulator: no xterm.js, no ghostty-web. The plugin runs each program in [libghostty-vt](https://github.com/ghostty-org/ghostty), Ghostty's terminal emulator as a library. The page asks the plugin for the rows it is showing, and the plugin answers with those rows as HTML, in their colours. Rows that have scrolled off the top stay on the server, so the page can scroll back through them. `<ghostty-term>`, a [Datastar Rocket](https://data-star.dev) web component, does the asking and the showing, and sends your keys back.
 
 A page needs one tag for a terminal:
 
