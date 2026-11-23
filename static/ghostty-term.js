@@ -87,6 +87,35 @@ document.addEventListener("copy", (ev) => {
   ev.preventDefault();
 });
 
+// Web addresses in the rows become links, as terminals make them clickable.
+// A link the program sent itself (OSC 8) already arrives as an <a> from
+// libghostty; this finds the plain ones in the text around them. Every link
+// opens in a new tab.
+const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?)\]}]/g;
+function linkify(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => n.parentElement?.closest("a") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  const hits = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) if (URL_RE.test(n.data)) hits.push(n);
+  for (const n of hits) {
+    URL_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let at = 0;
+    for (const m of n.data.matchAll(URL_RE)) {
+      if (m.index > at) frag.append(n.data.slice(at, m.index));
+      const a = document.createElement("a");
+      a.href = m[0];
+      a.textContent = m[0];
+      frag.append(a);
+      at = m.index + m[0].length;
+    }
+    if (at < n.data.length) frag.append(n.data.slice(at));
+    n.replaceWith(frag);
+  }
+  for (const a of root.querySelectorAll("a[href]")) { a.target = "_blank"; a.rel = "noopener"; }
+}
+
 rocket("ghostty-term", {
   mode: "light",
   props: ({ string, bool }) => ({
@@ -215,6 +244,7 @@ rocket("ghostty-term", {
           const y = docY();
           const old = g;
           win.innerHTML = r.html;
+          linkify(win);
           st.top = r.top; st.h = w.h; st.fp = r.fp;
           st.cols = r.cols; st.total = r.total; st.rows = r.rows;
           st.cursor = r.cursor;
@@ -374,6 +404,8 @@ rocket("ghostty-term", {
     };
     box.addEventListener("pointerdown", (ev) => {
       if (!grabbed() || ev.shiftKey || !BUTTONS[ev.button]) return;
+      // While the program holds the mouse, Cmd or Ctrl and click still opens a link.
+      if ((ev.metaKey || ev.ctrlKey) && ev.target.closest?.("a[href]")) return;
       ev.preventDefault();
       try { ta.focus({ preventScroll: true }); } catch {}
       box.setPointerCapture(ev.pointerId);
