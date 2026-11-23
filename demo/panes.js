@@ -89,8 +89,21 @@ strip.addEventListener("mousedown", (e) => {
   setSelected(p.dataset.pane);
   setMode("focus");
 });
+// The arrow lights when the pointer moves over it, and goes dark when the
+// pointer leaves or the arrow is clicked (see .follow.lit in panes.css).
+// Only a real move counts: Safari sends a move at the same spot when the
+// arrow appears under a pointer that hasn't moved.
+let lastXY = "";
+strip.addEventListener("pointermove", (e) => {
+  const xy = `${e.clientX},${e.clientY}`;
+  if (xy === lastXY) return;
+  lastXY = xy;
+  e.target.closest(".follow")?.classList.add("lit");
+});
+strip.addEventListener("pointerout", (e) => { const b = e.target.closest(".follow"); if (b && !b.contains(e.relatedTarget)) b.classList.remove("lit"); });
 strip.addEventListener("click", (e) => {
   const btn = e.target.closest(".follow");
+  btn?.classList.remove("lit");
   if (btn) {
     btn.closest(".pane")?.querySelector("ghostty-term")?.follow?.();
     e.stopPropagation();

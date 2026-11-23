@@ -27,7 +27,10 @@ body{background:#000;color:var(--fg);font:14px/1.2 system-ui,sans-serif;overflow
 .pane:has(ghostty-term.unstuck) .follow{display:flex}
 .tag{letter-spacing:0.04em}
 body.zoom .pane.selected .zoomtag{visibility:visible}
-.follow:hover{background:var(--sel);color:#fff}
+/* Lit only once the pointer moves over it (panes.js): after a click it hides,
+   and when it comes back under a pointer that hasn't moved, :hover alone
+   would show it lit as if hovered. */
+.follow.lit{background:var(--sel);color:#fff}
 
 /* Zoom: the selected pane fills the strip. The others are hidden in place,
    so their terminals keep following behind the zoom. */
