@@ -6,7 +6,8 @@
 #
 # The layout lives in the store, with each pane's terminal handle beside it.
 # The terminals live in the plugin, so a restart spawns every pane again.
-# GHX_PANE_CMD is what each pane runs (default: nu).
+# Each pane runs nu if it is on PATH, else the default shell ($SHELL);
+# GHX_PANE_CMD overrides both.
 #
 # One connection carries every terminal: /sse follows `ghostty changes --all`,
 # which hears terminals spawned after it opened too, and names each tick's
@@ -27,7 +28,9 @@ use http-nu/datastar *
 const STATIC = path self ../static
 const PAGE_JS = path self panes.js
 const PAGE_CSS = path self panes.css
-let pane_cmd = ($env.GHX_PANE_CMD? | default "nu" | split row " ")
+# What each pane runs: GHX_PANE_CMD if set, else nu if it is on PATH, else
+# the login shell ($SHELL), else /bin/sh.
+let pane_cmd = if ($env.GHX_PANE_CMD? | is-not-empty) { $env.GHX_PANE_CMD | split row " " } else if (which nu | is-not-empty) { [nu] } else { [($env.SHELL? | default "/bin/sh")] }
 
 def layout [] {
   let f = .last "panes.layout"
